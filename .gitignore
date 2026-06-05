@@ -48,6 +48,7 @@ data/cache/*
 
 # Logs
 *.log
+logs/
 
 # OS
 .DS_Store
@@ -62,5 +63,6 @@ htmlcov/
 .cache/
 CLAUDE.md
 docs/
-logs/
 src/mcp/
+
+frontend/node_modules/
