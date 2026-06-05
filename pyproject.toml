@@ -1,0 +1,72 @@
+# Scira - Scientific Research Assistant
+# Unified project configuration using pyproject.toml
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "scira"
+version = "0.1.0"
+authors = [{ name = "zhugenmi", email = "zhugenmi@gmail.com" }]
+description = "AI-powered scientific research assistant"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+# Core dependencies
+dependencies = [
+    # LangGraph & LangChain
+    "langgraph>=0.2.0",
+    "langchain>=0.3.0",
+    "langchain-core>=0.3.0",
+    "langchain-openai>=0.2.0",
+    "langchain-anthropic>=0.2.0",
+
+    # PDF processing
+    "arxiv>=2.1.0",
+    "pypdf>=4.0.0",
+    "pymupdf>=1.24.0",
+
+    # Environment & Configuration
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.0.0",
+
+    # Web framework
+    "fastapi>=0.110.0",
+    "uvicorn>=0.27.0",
+    "sse-starlette>=2.0.0",
+
+    # Utilities
+    "tiktoken>=0.7.0",
+    "requests>=2.31.0",
+    "rich>=13.0.0",
+    "loguru>=0.7.0",
+    "langsmith>=0.1.0",
+
+    # MCP
+    "mcp>=1.6.0",
+
+    # MCP - Paper Search
+    "feedparser",
+    "fastmcp",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=4.9.0",
+    "httpx[socks]>=0.28.1",
+]
+
+# Optional dependencies
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+frontend = [
+    "streamlit>=1.40.0",
+]
+
+[project.scripts]
+scira = "src.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]

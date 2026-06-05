@@ -1,0 +1,105 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-primary: #0ea5e9;
+  --color-bg: #0f1419;
+  --color-surface: #1a1f2e;
+  --color-border: #2d3548;
+  --color-text: #e7e9ea;
+  --color-muted: #8b98a5;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  font-family: 'Noto Sans SC', system-ui, sans-serif;
+  background-color: var(--color-bg);
+  color: var(--color-text);
+}
+
+/* 自定义滚动条 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-muted);
+}
+
+/* 纸张纹理背景 */
+.paper-texture {
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+  opacity: 0.03;
+}
+
+/* 渐变网格背景 */
+.grid-gradient {
+  background:
+    radial-gradient(at 40% 20%, rgba(14, 165, 233, 0.08) 0px, transparent 50%),
+    radial-gradient(at 80% 0%, rgba(99, 102, 241, 0.08) 0px, transparent 50%),
+    radial-gradient(at 0% 50%, rgba(236, 72, 153, 0.05) 0px, transparent 50%),
+    radial-gradient(at 80% 50%, rgba(14, 165, 233, 0.05) 0px, transparent 50%),
+    radial-gradient(at 0% 100%, rgba(99, 102, 241, 0.05) 0px, transparent 50%);
+}
+
+/* 卡片悬浮效果 */
+.card-hover {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.card-hover:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    0 4px 20px rgba(0, 0, 0, 0.3),
+    0 0 0 1px rgba(14, 165, 233, 0.2);
+}
+
+/* 按钮悬浮效果 */
+.btn-primary {
+  @apply bg-primary-500 text-white px-4 py-2 rounded-lg font-medium;
+  @apply transition-all duration-200;
+  @apply hover:bg-primary-600 hover:shadow-lg hover:shadow-primary-500/20;
+  @apply active:scale-95;
+}
+
+/* 输入框样式 */
+.input-field {
+  @apply w-full bg-dark-surface border border-dark-border rounded-lg px-4 py-2;
+  @apply text-dark-text placeholder-dark-muted;
+  @apply focus:outline-none focus:border-primary-500 focus:ring-1 focus:ring-primary-500;
+  @apply transition-all duration-200;
+}
+
+/* 标签样式 */
+.tag {
+  @apply inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium;
+  @apply bg-primary-500/20 text-primary-400;
+}
+
+/* 论文卡片 */
+.paper-card {
+  @apply bg-dark-surface border border-dark-border rounded-xl p-4;
+  @apply transition-all duration-300;
+  @apply hover:border-primary-500/50;
+}
+
+.paper-card:hover {
+  @apply shadow-lg shadow-primary-500/5;
+}
