@@ -101,12 +101,13 @@ class ReaderAgent:
             tasks.append(task)
         return tasks
 
-    def download_paper(self, task: ReadingTask) -> ReadingTask:
+    def download_paper(self, task: ReadingTask, download_dir: Optional[str] = None) -> ReadingTask:
         """
         Download single paper PDF via MCP HTTP API.
 
         Args:
             task: Reading task
+            download_dir: Custom download directory (e.g., papers/reinforcement_learning/pdfs)
 
         Returns:
             Updated task with pdf_path
@@ -115,8 +116,9 @@ class ReaderAgent:
         from src.utils.logger import logger
 
         mcp_api_base = os.getenv("MCP_API_BASE", "http://localhost:8001/api/paper-search")
-        download_dir = os.getenv("PAPER_DOWNLOAD_DIR", "./data/downloads")
-        os.makedirs(download_dir, exist_ok=True)
+        # 优先使用传入的 download_dir，否则使用环境变量
+        target_dir = download_dir or os.getenv("PAPER_DOWNLOAD_DIR", "./data/downloads")
+        os.makedirs(target_dir, exist_ok=True)
 
         # 从 paper_id 提取实际的 ID
         paper_id = task.paper_id
@@ -157,7 +159,7 @@ class ReaderAgent:
                 json={
                     "source": "arxiv",
                     "paper_id": paper_id,
-                    "save_path": download_dir,
+                    "save_path": target_dir,
                     "use_scihub": True,
                 },
                 timeout=120
@@ -166,7 +168,30 @@ class ReaderAgent:
             if response.status_code == 200:
                 result = response.json()
                 if result.get("success"):
-                    task.pdf_path = result.get("save_path")
+                    returned_path = result.get("save_path", "")
+                    # 检查文件是否在正确的位置
+                    expected_path = os.path.join(target_dir, f"{paper_id}.pdf")
+
+                    if os.path.exists(expected_path):
+                        # 文件已在正确位置
+                        task.pdf_path = expected_path
+                    elif os.path.exists(returned_path):
+                        # 文件在其他位置，尝试移动到正确位置
+                        os.makedirs(target_dir, exist_ok=True)
+                        try:
+                            import shutil
+                            shutil.move(returned_path, expected_path)
+                            task.pdf_path = expected_path
+                            logger.info(f"Moved PDF to correct location: {expected_path}")
+                        except Exception as e:
+                            # 移动失败，使用原路径
+                            task.pdf_path = returned_path
+                            logger.warning(f"Failed to move PDF: {e}")
+                    else:
+                        # 文件不存在，使用期望路径
+                        task.pdf_path = expected_path
+                        logger.warning(f"PDF not found at {returned_path} or {expected_path}")
+
                     task.status = "downloaded"
                     logger.info(f"Downloaded paper: {paper_id}")
                 else:
@@ -216,10 +241,44 @@ class ReaderAgent:
         Returns:
             Updated task with parsed content
         """
-        if not task.pdf_path or not os.path.exists(task.pdf_path):
+        from src.utils.logger import logger
+
+        # 检查PDF路径是否存在
+        if not task.pdf_path:
             task.status = "failed"
-            task.error = "PDF not found"
+            task.error = "No PDF path provided"
+            logger.warning(f"Parse failed - no PDF path: {task.paper_id}")
             return task
+
+        if not os.path.exists(task.pdf_path):
+            # 尝试多个可能的路径
+            possible_paths = [
+                task.pdf_path,
+                os.path.join("./data/downloads", f"{task.paper_id}.pdf"),
+                os.path.join("./data/papers", f"{task.paper_id}.pdf"),
+            ]
+
+            found_path = None
+            for p in possible_paths:
+                if os.path.exists(p):
+                    found_path = p
+                    break
+
+            if found_path:
+                task.pdf_path = found_path
+                logger.info(f"Found PDF at alternative path: {found_path}")
+            else:
+                # 列出downloads目录的内容帮助调试
+                download_dir = os.path.join(os.getenv("PAPER_DOWNLOAD_DIR", "./data/downloads"))
+                if os.path.exists(download_dir):
+                    files = os.listdir(download_dir)
+                    logger.warning(f"PDF not found: {task.paper_id}, files in downloads: {files[:10]}")
+                else:
+                    logger.warning(f"PDF not found: {task.pdf_path}, download dir not exists: {download_dir}")
+
+                task.status = "failed"
+                task.error = "PDF not found"
+                return task
 
         try:
             parsed = self.pdf_parser.parse(task.pdf_path, task.paper_id)
@@ -239,25 +298,28 @@ class ReaderAgent:
             }
 
             task.status = "completed"
+            logger.info(f"Parsed paper successfully: {task.paper_id}, words: {parsed.word_count}")
 
         except Exception as e:
             task.status = "failed"
             task.error = f"Parse failed: {e}"
+            logger.warning(f"Parse failed for {task.paper_id}: {e}")
 
         return task
 
-    def process_task(self, task: ReadingTask) -> ReadingTask:
+    def process_task(self, task: ReadingTask, download_dir: Optional[str] = None) -> ReadingTask:
         """
         Complete processing: download + parse.
 
         Args:
             task: Reading task
+            download_dir: Custom download directory
 
         Returns:
             Fully processed task
         """
-        # Download
-        task = self.download_paper(task)
+        # Download with custom directory
+        task = self.download_paper(task, download_dir=download_dir)
         if task.status == "failed":
             return task
 
@@ -334,6 +396,7 @@ Word Count: {content.get('word_count', 0)}
         self,
         tasks: List[ReadingTask],
         max_workers: Optional[int] = None,
+        download_dir: Optional[str] = None,
     ) -> List[ReadingTask]:
         """
         Process tasks in parallel.
@@ -341,6 +404,7 @@ Word Count: {content.get('word_count', 0)}
         Args:
             tasks: List of reading tasks
             max_workers: Override max workers
+            download_dir: Custom download directory
 
         Returns:
             Processed tasks
@@ -349,7 +413,9 @@ Word Count: {content.get('word_count', 0)}
         processed = []
 
         with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = {executor.submit(self.process_task, task): task for task in tasks}
+            # 使用 partial 传递 download_dir
+            task_func = partial(self.process_task, download_dir=download_dir)
+            futures = {executor.submit(task_func, task): task for task in tasks}
 
             for future in as_completed(futures):
                 try:
@@ -437,6 +503,7 @@ Word Count: {content.get('word_count', 0)}
         self,
         papers: List[Dict[str, Any]],
         max_workers: Optional[int] = None,
+        download_dir: Optional[str] = None,
     ) -> ReadingResult:
         """
         Run complete reading workflow.
@@ -444,6 +511,7 @@ Word Count: {content.get('word_count', 0)}
         Args:
             papers: Papers to read
             max_workers: Parallel workers
+            download_dir: Custom download directory (e.g., papers/reinforcement_learning/pdfs)
 
         Returns:
             ReadingResult
@@ -451,8 +519,8 @@ Word Count: {content.get('word_count', 0)}
         # Create tasks
         tasks = self.create_tasks(papers)
 
-        # Process in parallel
-        processed_tasks = self.process_batch(tasks, max_workers)
+        # Process in parallel with custom download directory
+        processed_tasks = self.process_batch(tasks, max_workers, download_dir)
 
         # Generate summary
         summary = self.generate_summary(processed_tasks)

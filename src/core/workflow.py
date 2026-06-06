@@ -37,6 +37,51 @@ from src.utils.logger import (
 setup_logging(level="INFO", verbose=False)
 
 
+# ==================== Helper Functions ====================
+
+def extract_keywords_from_text(title: str, abstract: str, search_keywords: List[str]) -> List[str]:
+    """
+    从论文标题和摘要中提取关键词。
+
+    Args:
+        title: 论文标题
+        abstract: 论文摘要
+        search_keywords: 搜索关键词（作为回退）
+
+    Returns:
+        关键词列表
+    """
+    import re
+
+    keywords = []
+
+    # 1. 首先使用搜索关键词
+    if search_keywords:
+        keywords.extend(search_keywords[:3])
+
+    # 2. 从标题中提取有意义的词
+    if title:
+        # 移除常见前缀
+        clean_title = re.sub(r'^(Paper|Article|Thesis|Report):\s*', '', title, flags=re.IGNORECASE)
+        # 提取包含大写字母或数字的词组（通常是技术术语）
+        title_words = re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', clean_title)
+        # 过滤掉常见词
+        stop_words = {'The', 'A', 'An', 'This', 'These', 'Those', 'Using', 'Based', 'For', 'With', 'From', 'On', 'In', 'To', 'Of', 'And', 'Or'}
+        title_words = [w for w in title_words if w not in stop_words and len(w) > 2]
+        keywords.extend(title_words[:2])
+
+    # 3. 去重并返回
+    seen = set()
+    unique_keywords = []
+    for kw in keywords:
+        kw_lower = kw.lower()
+        if kw_lower not in seen:
+            seen.add(kw_lower)
+            unique_keywords.append(kw)
+
+    return unique_keywords[:5] if unique_keywords else search_keywords[:3] if search_keywords else ["general"]
+
+
 # ==================== Token Tracking ====================
 
 def track_token_usage(state: GraphState, input_tokens: int = 0, output_tokens: int = 0):
@@ -160,107 +205,110 @@ def retrieval_node(state: GraphState) -> GraphState:
                 from datetime import datetime as dt
                 import json
                 from pathlib import Path
+                import re
 
                 # Create papers directory
                 papers_dir = Path("data/papers")
                 papers_dir.mkdir(parents=True, exist_ok=True)
 
-                # Check for existing papers and deduplicate
-                existing_papers = {}
+                # 使用搜索关键词的第一项作为领域分类（因为论文的topics为空）
+                search_keywords = result.search_strategy.keywords
+                category = search_keywords[0].replace(" ", "_").replace("/", "_")[:30] if search_keywords else "general"
+
+                # 创建领域目录
+                category_dir = papers_dir / category
+                category_dir.mkdir(parents=True, exist_ok=True)
+
+                # 创建pdfs子目录
+                pdfs_dir = category_dir / "pdfs"
+                pdfs_dir.mkdir(parents=True, exist_ok=True)
+
+                # 只保存本次检索到的论文，不与已有论文混合
+                current_papers = []
+                for p in state["search_results"]:
+                    paper_id = p.get("paper_id", "")
+                    if not paper_id:
+                        continue
+
+                    # 从标题/摘要中提取关键字作为topics
+                    title = p.get("title", "")
+                    abstract = p.get("abstract", "")
+                    keywords = p.get("keywords", [])
+
+                    # 如果没有keywords，从标题和摘要中提取
+                    if not keywords:
+                        keywords = extract_keywords_from_text(title, abstract, search_keywords)
+
+                    # 创建论文信息
+                    paper_info = {
+                        "paper_id": paper_id,
+                        "title": title,
+                        "authors": p.get("authors", []),
+                        "published_date": p.get("published_date", ""),
+                        "abstract": abstract,
+                        "pdf_url": p.get("pdf_url", ""),
+                        "topics": keywords,  # 使用提取的关键字填充topics
+                        "keywords": keywords,
+                        "citations": p.get("citations", 0),
+                        "pdf_path": str(pdfs_dir / f"{paper_id}.pdf") if p.get("pdf_url") else "",
+                    }
+                    current_papers.append(paper_info)
+
+                logger.info(f"Processed {len(current_papers)} papers for category: {category}")
+
+                # 保存当前领域的论文到 JSON 文件
+                category_file = category_dir / f"{category}.json"
+                category_metadata = {
+                    "category": category,
+                    "topic": user_query,
+                    "search_keywords": search_keywords,
+                    "retrieved_at": dt.now().isoformat(),
+                    "count": len(current_papers),
+                    "papers": current_papers
+                }
+                with open(category_file, "w", encoding="utf-8") as f:
+                    json.dump(category_metadata, f, indent=2, ensure_ascii=False)
+
+                logger.info(f"Saved {len(current_papers)} papers to: {category_file}")
+
+                # 更新 all_papers.json - 记录所有领域
                 all_papers_file = papers_dir / "all_papers.json"
+                all_papers_metadata = {
+                    "topic": user_query,
+                    "search_keywords": search_keywords,
+                    "retrieved_at": dt.now().isoformat(),
+                    "total_papers": len(current_papers),
+                    "current_category": category,
+                    "categories": {}
+                }
+
+                # 读取已有的 all_papers.json，保留其他领域的记录
                 if all_papers_file.exists():
                     try:
                         with open(all_papers_file, "r", encoding="utf-8") as f:
-                            existing_data = json.load(f)
-                            for p in existing_data.get("papers", []):
-                                existing_papers[p.get("paper_id", "")] = p
-                            logger.info(f"Found {len(existing_papers)} existing papers for deduplication")
+                            existing_all = json.load(f)
+                            # 保留其他类别的引用
+                            for cat, cat_path in existing_all.get("categories", {}).items():
+                                if cat != category and Path(cat_path).exists():
+                                    all_papers_metadata["categories"][cat] = cat_path
                     except:
                         pass
 
-                # Process new papers - deduplicate
-                new_papers = []
-                skipped_count = 0
-                for p in state["search_results"]:
-                    paper_id = p.get("paper_id", "")
-                    if paper_id in existing_papers:
-                        skipped_count += 1
-                        logger.debug(f"Skipping duplicate paper: {paper_id}")
-                        continue
-                    new_papers.append(p)
+                # 添加当前类别
+                all_papers_metadata["categories"][category] = str(category_file)
+                all_papers_metadata["total_papers"] = sum(
+                    json.load(open(Path(p), "r", encoding="utf-8")).get("count", 0)
+                    for p in all_papers_metadata["categories"].values()
+                    if Path(p).exists()
+                )
 
-                if skipped_count > 0:
-                    logger.info(f"Skipped {skipped_count} duplicate papers")
-
-                # Merge: keep existing + add new
-                all_papers_metadata = {
-                    "topic": user_query,
-                    "search_keywords": result.search_strategy.keywords,
-                    "retrieved_at": dt.now().isoformat(),
-                    "total_papers": len(existing_papers) + len(new_papers),
-                    "by_topic": {},
-                    "papers": list(existing_papers.values())
-                }
-
-                # If there are new papers, classify and save them
-                if new_papers:
-                    # Classify new papers by their topics/keywords
-                    topic_groups = {}
-                    for p in new_papers:
-                        paper_topics = p.get("topics", [])
-                        if not paper_topics:
-                            paper_topics = result.search_strategy.keywords[:3]
-
-                        primary_topic = paper_topics[0] if paper_topics else "general"
-                        primary_topic = primary_topic.replace(" ", "_").replace("/", "_")[:30]
-
-                        if primary_topic not in topic_groups:
-                            topic_groups[primary_topic] = []
-                        topic_groups[primary_topic].append(p)
-
-                    # Save new papers organized by topic
-                    for topic, papers_list in topic_groups.items():
-                        topic_dir = papers_dir / topic
-                        topic_dir.mkdir(parents=True, exist_ok=True)
-
-                        topic_papers = []
-                        for p in papers_list:
-                            paper_info = {
-                                "paper_id": p.get("paper_id", ""),
-                                "title": p.get("title", ""),
-                                "authors": p.get("authors", []),
-                                "published_date": p.get("published_date", ""),
-                                "abstract": p.get("abstract", ""),
-                                "pdf_url": p.get("pdf_url", ""),
-                                "topics": [primary_topic],  # 使用计算出的主题分类
-                                "citations": p.get("citations", 0),
-                            }
-                            topic_papers.append(paper_info)
-                            all_papers_metadata["papers"].append(paper_info)
-
-                        # Save topic-specific file (overwrite with all papers in topic)
-                        topic_file = topic_dir / f"{topic}.json"
-                        topic_metadata = {
-                            "category": topic,
-                            "topic": user_query,
-                            "updated_at": dt.now().isoformat(),
-                            "count": len(topic_papers),
-                            "papers": topic_papers
-                        }
-                        with open(topic_file, "w", encoding="utf-8") as f:
-                            json.dump(topic_metadata, f, indent=2, ensure_ascii=False)
-
-                        all_papers_metadata["by_topic"][topic] = str(topic_file)
-                        logger.info(f"Saved {len(topic_papers)} papers to: {topic_file}")
-
-                # Save all papers combined (overwrite)
                 with open(all_papers_file, "w", encoding="utf-8") as f:
                     json.dump(all_papers_metadata, f, indent=2, ensure_ascii=False)
 
-                logger.info(f"Total papers in database: {len(all_papers_metadata['papers'])}")
+                logger.info(f"Total papers in database: {all_papers_metadata['total_papers']}")
                 state["papers_saved_path"] = str(all_papers_file)
-
-                logger.info(f"All papers metadata saved to: {all_papers_file}")
+                state["current_category"] = category
+                state["pdfs_dir"] = str(pdfs_dir)
                 state["papers_saved_path"] = str(all_papers_file)
             except Exception as e:
                 logger.warning(f"Failed to save papers metadata: {e}")
@@ -298,13 +346,24 @@ def reading_node(state: GraphState) -> GraphState:
         papers_to_read = state.get("search_results", [])
         logger.info(f"Starting to read {len(papers_to_read)} papers")
 
+        # 获取之前创建的PDFs目录，使用绝对路径
+        import os
+        base_dir = os.path.abspath(".")
+        pdfs_dir = state.get("pdfs_dir", os.path.join(base_dir, "data/papers/pdfs"))
+
+        # 转换为绝对路径
+        if not os.path.isabs(pdfs_dir):
+            pdfs_dir = os.path.join(base_dir, pdfs_dir)
+
+        logger.info(f"PDF download directory: {pdfs_dir}")
+
         # papers_to_read is already a list of dicts from MCP API search
         # No need to convert to ArxivPaper - ReaderAgent handles dicts directly
 
         agent = ReaderAgent(max_workers=4)
         logger.debug(f"ReaderAgent initialized with {agent.max_workers} workers")
 
-        result = agent.run(papers_to_read)
+        result = agent.run(papers_to_read, download_dir=pdfs_dir)
 
         state["literature_data"] = result.literature_data
         state["reading_errors"] = result.reading_summary.get("failed_papers", [])
@@ -503,6 +562,47 @@ def revision_node(state: GraphState) -> GraphState:
                 f"Requests: {token_usage.get('request_count', 0)}"
             )
 
+        # Save final report to data/outputs/
+        try:
+            from pathlib import Path
+            from datetime import datetime as dt
+            import re
+
+            # 直接在outputs/目录下生成文件，不建子目录
+            output_dir = Path("data/outputs")
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            # 清理topic名称，创建安全的文件名
+            safe_topic = re.sub(r'[^\w一-鿿\-\s]', '_', topic)[:50]
+            safe_topic = safe_topic.replace(" ", "")  # 移除空格
+
+            # 生成时间戳
+            timestamp = dt.now().strftime("%Y%m%d_%H%M%S")
+
+            # 保存Markdown格式的报告 - 直接在outputs/目录
+            md_file = output_dir / f"{safe_topic}_{timestamp}.md"
+            with open(md_file, "w", encoding="utf-8") as f:
+                # 添加标题和元信息
+                f.write(f"# {topic}\n\n")
+                f.write(f"**生成时间**: {dt.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+                f.write(f"**摘要**: {state.get('abstract', '')}\n\n")
+                f.write("---\n\n")
+                # 写入正文
+                f.write(state.get("final_review", ""))
+
+            logger.info(f"Final report saved to: {md_file}")
+            state["report_path"] = str(md_file)
+
+            # 同时保存纯文本版本（不带标题和元信息）
+            txt_file = output_dir / f"{safe_topic}_{timestamp}.txt"
+            with open(txt_file, "w", encoding="utf-8") as f:
+                f.write(state.get("final_review", ""))
+
+            logger.info(f"Plain text report saved to: {txt_file}")
+
+        except Exception as e:
+            logger.warning(f"Failed to save final report: {e}")
+
     except Exception as e:
         logger.error(f"Revision failed: {e}")
         state["error_messages"].append(f"Revision failed: {e}")
@@ -559,7 +659,8 @@ def should_approve_retrieval(state: GraphState) -> str:
 
 def should_approve_outline(state: GraphState) -> str:
     """Check if human approval needed for outline."""
-    if state.get("auto_approve", False):
+    # 默认自动通过，无需人工审批
+    if state.get("auto_approve", True):
         return "approved"
 
     approval = state.get("outline_approval")
@@ -568,7 +669,7 @@ def should_approve_outline(state: GraphState) -> str:
     elif approval == ApprovalStatus.REJECTED:
         return "retry"
 
-    return "needs_approval"
+    return "approved"  # 默认批准
 
 
 # ==================== Build Graph ====================

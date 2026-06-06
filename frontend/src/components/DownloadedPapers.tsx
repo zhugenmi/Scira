@@ -56,8 +56,30 @@ export default function DownloadedPapers() {
     // 可以打开 PDF 预览模态框
   }
 
-  const handleDownload = (paper: DownloadedPaper) => {
-    if (paper.pdfUrl) {
+  const handleDownload = async (paper: DownloadedPaper) => {
+    if (!paper.pdfUrl) return
+
+    try {
+      // 使用fetch下载PDF并保存到本地
+      const response = await fetch(paper.pdfUrl)
+      if (!response.ok) throw new Error('下载失败')
+
+      const blob = await response.blob()
+      const url = window.URL.createObjectURL(blob)
+
+      // 创建下载链接
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${paper.title.replace(/[^a-zA-Z0-9一-龥]/g, '_')}.pdf`
+      document.body.appendChild(a)
+      a.click()
+
+      // 清理
+      document.body.removeChild(a)
+      window.URL.revokeObjectURL(url)
+    } catch (error) {
+      console.error('下载失败:', error)
+      // 如果下载失败，回退到打开新标签页
       window.open(paper.pdfUrl, '_blank')
     }
   }

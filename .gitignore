@@ -66,3 +66,5 @@ docs/
 src/mcp/
 
 frontend/node_modules/
+
+scripts.md

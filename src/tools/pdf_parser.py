@@ -116,8 +116,6 @@ class PDFParser:
         for page in doc:
             all_text += page.get_text()
 
-        doc.close()
-
         # Extract abstract
         abstract = self._extract_abstract(all_text)
 
@@ -129,11 +127,14 @@ class PDFParser:
         # Extract references
         references = self._extract_references(all_text)
 
-        # Extract tables and figures
+        # Extract tables and figures (before closing doc!)
         tables, figures = self._extract_tables_figures(doc)
 
         # Clean text
         raw_text = self._clean_text(all_text)
+
+        # Close document AFTER all operations
+        doc.close()
 
         return ParsedPaper(
             paper_id=paper_id,

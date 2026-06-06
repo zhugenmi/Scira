@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { BookOpen, Search, ChevronRight, FileText, Calendar, User, Users, Tag, X, ExternalLink } from 'lucide-react'
+import { BookOpen, Search, ChevronRight, FileText, Calendar, User, Users, Tag, X, ExternalLink, File } from 'lucide-react'
 
 interface Paper {
   paper_id: string
@@ -11,6 +11,7 @@ interface Paper {
   pdf_url: string
   topics: string[]
   citations?: number
+  pdf_path?: string
 }
 
 interface TopicGroup {
@@ -26,6 +27,7 @@ export default function KnowledgeBase() {
   const [loading, setLoading] = useState(true)
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedPaper, setSelectedPaper] = useState<Paper | null>(null)
+  const [showPdf, setShowPdf] = useState(false)
 
   // 加载知识库数据
   useEffect(() => {
@@ -287,7 +289,7 @@ export default function KnowledgeBase() {
         </div>
       </div>
 
-      {/* 右侧论文详情 */}
+      {/* 右侧论文详情或PDF预览 */}
       <div className="flex-1 flex flex-col">
         {selectedPaper ? (
           <>
@@ -297,6 +299,20 @@ export default function KnowledgeBase() {
                 {selectedPaper.title}
               </h2>
               <div className="flex gap-2 shrink-0">
+                {/* 如果有本地PDF，显示阅读按钮 */}
+                {selectedPaper.pdf_path && (
+                  <button
+                    onClick={() => setShowPdf(!showPdf)}
+                    className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition-colors
+                      ${showPdf
+                        ? 'bg-primary-500 text-white'
+                        : 'bg-dark-surface border border-dark-border text-dark-text hover:border-primary-500/50'
+                      }`}
+                  >
+                    <File className="w-4 h-4" />
+                    {showPdf ? '关闭PDF' : '阅读PDF'}
+                  </button>
+                )}
                 {selectedPaper.pdf_url && (
                   <a
                     href={selectedPaper.pdf_url}
@@ -312,8 +328,19 @@ export default function KnowledgeBase() {
               </div>
             </div>
 
+            {/* PDF预览区域 */}
+            {showPdf && selectedPaper.pdf_path && (
+              <div className="h-96 border-b border-dark-border">
+                <iframe
+                  src={selectedPaper.pdf_path.replace('data/', '/data/')}
+                  className="w-full h-full"
+                  title="PDF Preview"
+                />
+              </div>
+            )}
+
             {/* 详情内容 */}
-            <div className="flex-1 overflow-auto p-6">
+            <div className={`overflow-auto p-6 ${showPdf && selectedPaper.pdf_path ? 'flex-1' : ''}`}>
               <div className="max-w-3xl mx-auto space-y-6">
                 {/* 标题 */}
                 <h1 className="text-xl font-display font-bold text-dark-text">

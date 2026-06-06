@@ -2,14 +2,14 @@ import { motion } from 'framer-motion'
 import {
   MessageSquare,
   FileText,
-  Download,
   BookOpen,
   ChevronLeft,
   Plus,
   History
 } from 'lucide-react'
+import { useState, useEffect } from 'react'
 
-type View = 'chat' | 'generated' | 'downloaded' | 'knowledge'
+type View = 'chat' | 'generated' | 'knowledge'
 
 interface SidebarProps {
   currentView: View
@@ -25,44 +25,73 @@ interface MenuItem {
   badge?: number
 }
 
-const menuItems: MenuItem[] = [
-  {
-    id: 'chat',
-    label: '会话',
-    icon: <MessageSquare className="w-5 h-5" />
-  },
-  {
-    id: 'generated',
-    label: '生成论文',
-    icon: <FileText className="w-5 h-5" />,
-    badge: 2
-  },
-  {
-    id: 'downloaded',
-    label: '下载论文',
-    icon: <Download className="w-5 h-5" />
-  },
-  {
-    id: 'knowledge',
-    label: '知识库',
-    icon: <BookOpen className="w-5 h-5" />,
-    badge: 1
-  }
-]
-
-// 模拟历史会话数据
-const recentSessions = [
-  { id: '1', title: '深度强化学习研究', time: '2小时前' },
-  { id: '2', title: 'Transformer 架构分析', time: '昨天' },
-  { id: '3', title: '机器学习综述', time: '3天前' },
-]
-
 export default function Sidebar({
   currentView,
   onViewChange,
   isCollapsed,
   onToggleCollapse
 }: SidebarProps) {
+  const [generatedCount, setGeneratedCount] = useState(0)
+  const [knowledgeCount, setKnowledgeCount] = useState(0)
+
+  // 从API获取真实数量
+  useEffect(() => {
+    const fetchCounts = async () => {
+      try {
+        // 获取报告数量
+        const outputsRes = await fetch('/api/outputs/list')
+        if (outputsRes.ok) {
+          const outputsData = await outputsRes.json()
+          const reportCount = outputsData.files?.filter((f: any) => f.name.endsWith('.md')).length || 0
+          setGeneratedCount(reportCount)
+        }
+      } catch (e) {
+        console.error('Failed to fetch outputs count:', e)
+      }
+
+      try {
+        // 获取知识库论文数量
+        const topicsRes = await fetch('/api/papers/topics')
+        if (topicsRes.ok) {
+          const topicsData = await topicsRes.json()
+          const totalPapers = topicsData.topics?.reduce((sum: number, t: any) => sum + t.count, 0) || 0
+          setKnowledgeCount(totalPapers)
+        }
+      } catch (e) {
+        console.error('Failed to fetch papers count:', e)
+      }
+    }
+
+    fetchCounts()
+  }, [])
+
+  const menuItems: MenuItem[] = [
+    {
+      id: 'chat',
+      label: '会话',
+      icon: <MessageSquare className="w-5 h-5" />
+    },
+    {
+      id: 'generated',
+      label: '报告生成',
+      icon: <FileText className="w-5 h-5" />,
+      badge: generatedCount
+    },
+    {
+      id: 'knowledge',
+      label: '知识库',
+      icon: <BookOpen className="w-5 h-5" />,
+      badge: knowledgeCount
+    }
+  ]
+
+  // 模拟历史会话数据
+  const recentSessions = [
+    { id: '1', title: '深度强化学习研究', time: '2小时前' },
+    { id: '2', title: 'Transformer 架构分析', time: '昨天' },
+    { id: '3', title: '机器学习综述', time: '3天前' },
+  ]
+
   return (
     <motion.aside
       initial={false}

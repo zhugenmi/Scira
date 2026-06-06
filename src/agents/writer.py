@@ -348,15 +348,64 @@ Output ONLY the section content.
 
         return results
 
-    def combine_content(self, sections: Dict[str, PaperSection]) -> str:
-        """Combine sections into full paper content."""
+    def combine_content(self, sections: Dict[str, PaperSection], section_order: Optional[List[str]] = None) -> str:
+        """Combine sections into full paper content.
+
+        Args:
+            sections: Dict of section_id -> PaperSection
+            section_order: Optional list of section_ids in desired order
+        """
+        import re
+
+        def get_sort_key(section: PaperSection) -> tuple:
+            """Get sort key for section ordering."""
+            if section_order:
+                # Use provided order
+                try:
+                    idx = section_order.index(section.section_id)
+                    return (0, idx, section.section_id)
+                except ValueError:
+                    pass
+
+            # Try to extract Chinese number from title
+            # Pattern: 一、二、三、四、五、六、七、八、九、十、十一...
+            chinese_numbers = {
+                '一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
+                '六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
+                '十一': 11, '十二': 12, '十三': 13, '十四': 14, '十五': 15,
+            }
+            title = section.title
+            match = re.match(r'^[一二三四五六七八九十十一]+(?=、)', title)
+            if match:
+                num_str = match.group()
+                num = chinese_numbers.get(num_str, 99)
+                return (0, num, section.section_id)
+
+            # Try to extract Arabic number
+            match = re.match(r'^\d+', title)
+            if match:
+                return (0, int(match.group()), section.section_id)
+
+            # Special sections
+            lower_title = title.lower()
+            if 'abstract' in lower_title or '摘要' in title:
+                return (0, -2, section.section_id)
+            if 'introduction' in lower_title or '引言' in title:
+                return (0, -1, section.section_id)
+            if 'conclusion' in lower_title or '结论' in title:
+                return (0, 100, section.section_id)
+            if 'reference' in lower_title or '参考文献' in title:
+                return (0, 200, section.section_id)
+            if 'appendix' in lower_title or '附录' in title:
+                return (0, 150, section.section_id)
+
+            # Default: use section_id
+            return (1, 0, section.section_id)
+
         parts = []
 
-        # Sort by section_id
-        sorted_sections = sorted(
-            sections.values(),
-            key=lambda s: s.section_id
-        )
+        # Sort by Chinese number order
+        sorted_sections = sorted(sections.values(), key=get_sort_key)
 
         for section in sorted_sections:
             if section.status == "completed" and section.content:
@@ -399,8 +448,11 @@ Output ONLY the section content.
         # Note: We write sequentially for better coherence
         sections = self.write_batch(outline.sections, context, max_workers)
 
-        # Combine content
-        paper_content = self.combine_content(sections)
+        # Get section order from outline
+        section_order = [s.section_id for s in outline.sections]
+
+        # Combine content with proper order
+        paper_content = self.combine_content(sections, section_order)
 
         # Count words
         total_words = sum(s.word_count for s in sections.values() if s.status == "completed")

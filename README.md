@@ -26,6 +26,7 @@
 ```
 scira/
 ├── src/                          # 源代码
+│   ├── main.py                   # 应用入口
 │   ├── agents/                   # 智能体
 │   │   ├── base.py               # Agent 基类
 │   │   ├── orchestrator.py       # 意图分析与任务调度
@@ -33,7 +34,8 @@ scira/
 │   │   ├── reader.py             # 论文阅读
 │   │   ├── analyzer.py           # 聚类分析
 │   │   ├── writer.py             # 大纲与写作
-│   │   └── reviewer.py           # 修订审核
+│   │   ├── reviewer.py           # 修订审核
+│   │   └── prompts.py            # 提示词模板
 │   ├── core/                     # 核心模块
 │   │   ├── state.py              # 状态定义
 │   │   ├── workflow.py           # LangGraph 工作流
@@ -41,19 +43,30 @@ scira/
 │   │   └── knowledge.py          # 知识库查询
 │   ├── mcp/                      # MCP 服务
 │   │   ├── server.py             # API 服务入口
-│   │   └── paper_search_mcp/     # 论文搜索 MCP
+│   │   └── paper_search_mcp/     # 论文搜索/下载 MCP
+│   │       └── academic_platforms/  # 学术平台集成
 │   ├── tools/                    # 工具函数
+│   │   ├── pdf_parser.py         # PDF 解析
+│   │   └── format_utils.py       # 格式化工具
 │   └── utils/                    # 日志等
+│       └── logger.py
 ├── frontend/                      # React 前端
 │   └── src/
-│       ├── components/           # 组件
-│       │   ├── ChatView.tsx      # 多轮对话
-│       │   ├── KnowledgeBase.tsx # 知识库
-│       │   ├── DownloadedPapers.tsx
-│       │   └── GeneratedPapers.tsx
-│       └── App.tsx
-├── docs/                         # 技术文档
+│       ├── main.tsx              # 前端入口
+│       ├── App.tsx               # 主应用组件
+│       ├── styles/               # 样式文件
+│       └── components/           # 组件
+│           ├── ChatView.tsx      # 多轮对话
+│           ├── KnowledgeBase.tsx # 知识库
+│           ├── DownloadedPapers.tsx
+│           ├── GeneratedPapers.tsx
+│           ├── Header.tsx        # 顶部导航
+│           └── Sidebar.tsx       # 侧边栏
+├── data/                         # 数据存储
+├── logs/                         # 日志文件
 ├── config/                       # 配置
+├── tests/                        # 测试
+├── pyproject.toml                # 项目配置
 ├── .env                          # 环境变量
 └── README.md
 ```

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
-import { FileText, Download, Eye, Calendar, Search, MoreVertical, Trash2 } from 'lucide-react'
+import { FileText, Download, Eye, Calendar, Search, Trash2 } from 'lucide-react'
 
 interface GeneratedPaper {
   id: string
@@ -8,6 +8,7 @@ interface GeneratedPaper {
   topic: string
   createdAt: string
   wordCount: number
+  filename: string
 }
 
 export default function GeneratedPapers() {
@@ -17,26 +18,40 @@ export default function GeneratedPapers() {
   const [selectedPaper, setSelectedPaper] = useState<GeneratedPaper | null>(null)
   const [previewContent, setPreviewContent] = useState('')
 
-  // 模拟数据 - 实际应该从 API 获取
+  // 从API获取文件列表
   useEffect(() => {
-    const mockPapers: GeneratedPaper[] = [
-      {
-        id: '1',
-        title: '深度强化学习研究报告',
-        topic: '深度强化学习',
-        createdAt: '2024-06-05 07:31',
-        wordCount: 15820
-      },
-      {
-        id: '2',
-        title: '机器学习研究综述',
-        topic: '机器学习',
-        createdAt: '2024-06-05 07:05',
-        wordCount: 12350
+    const loadPapers = async () => {
+      try {
+        const response = await fetch('/api/outputs/list')
+        if (response.ok) {
+          const data = await response.json()
+          const papersList: GeneratedPaper[] = data.files
+            .filter((f: any) => f.name.endsWith('.md'))
+            .map((f: any, index: number) => {
+              // 从文件名提取标题（去掉时间戳后缀）
+              const nameWithoutExt = f.name.replace('.md', '')
+              // 尝试分割时间戳格式：xxx_20260606_095415
+              const match = nameWithoutExt.match(/^(.+)_(\d{8}_\d{6})$/)
+              const title = match ? match[1] : nameWithoutExt
+
+              return {
+                id: String(index + 1),
+                title: title,
+                topic: '研究论文',
+                createdAt: new Date(f.modified * 1000).toLocaleString('zh-CN'),
+                wordCount: Math.round(f.size / 5), // 估算字数
+                filename: f.name
+              }
+            })
+          setPapers(papersList)
+        }
+      } catch (error) {
+        console.error('加载文件列表失败:', error)
       }
-    ]
-    setPapers(mockPapers)
-    setLoading(false)
+      setLoading(false)
+    }
+
+    loadPapers()
   }, [])
 
   // 过滤论文
@@ -48,7 +63,7 @@ export default function GeneratedPapers() {
   const handlePreview = async (paper: GeneratedPaper) => {
     setSelectedPaper(paper)
     try {
-      const response = await fetch(`/data/outputs/research_${paper.id}.md`)
+      const response = await fetch(`/data/outputs/${paper.filename}`)
       if (response.ok) {
         const content = await response.text()
         setPreviewContent(content)
@@ -61,13 +76,30 @@ export default function GeneratedPapers() {
   }
 
   const handleDownload = (paper: GeneratedPaper) => {
-    // 实际应该从 API 获取文件
-    window.open(`/data/outputs/research_${paper.id}.md`, '_blank')
+    window.open(`/data/outputs/${paper.filename}`, '_blank')
   }
 
-  const handleDelete = (id: string) => {
-    if (confirm('确定要删除这篇论文吗？')) {
-      setPapers(papers.filter(p => p.id !== id))
+  const handleDelete = async (paper: GeneratedPaper) => {
+    if (confirm('确定要删除这篇论文吗？此操作不可恢复。')) {
+      try {
+        const response = await fetch(`/api/outputs/${paper.filename}`, {
+          method: 'DELETE'
+        })
+        if (response.ok) {
+          // 从列表中移除
+          setPapers(papers.filter(p => p.filename !== paper.filename))
+          // 如果删除的是当前选中的，清空选择
+          if (selectedPaper?.filename === paper.filename) {
+            setSelectedPaper(null)
+            setPreviewContent('')
+          }
+        } else {
+          alert('删除失败')
+        }
+      } catch (error) {
+        console.error('删除失败:', error)
+        alert('删除失败')
+      }
     }
   }
 
@@ -125,7 +157,7 @@ export default function GeneratedPapers() {
                   <button
                     onClick={(e) => {
                       e.stopPropagation()
-                      handleDelete(paper.id)
+                      handleDelete(paper)
                     }}
                     className="p-1 hover:bg-dark-border/50 rounded text-dark-muted hover:text-red-400"
                   >
