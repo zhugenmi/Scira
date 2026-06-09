@@ -211,9 +211,51 @@ def retrieval_node(state: GraphState) -> GraphState:
                 papers_dir = Path("data/papers")
                 papers_dir.mkdir(parents=True, exist_ok=True)
 
-                # 使用搜索关键词的第一项作为领域分类（因为论文的topics为空）
+                # 使用用户查询生成分类名，而非搜索关键词
+                user_query = state.get("user_query", "")
                 search_keywords = result.search_strategy.keywords
-                category = search_keywords[0].replace(" ", "_").replace("/", "_")[:30] if search_keywords else "general"
+
+                # 尝试使用用户查询生成分类名
+                if user_query:
+                    # 将用户查询转换为分类名
+                    # 中文：取拼音首字母或直接音译
+                    # 英文：使用下划线分隔
+                    import re
+                    # 检查是否包含中文字符
+                    if re.search(r'[一-鿿]', user_query):
+                        # 中文查询：翻译为英文或使用拼音
+                        # 常见领域映射
+                        query_to_category = {
+                            "强化学习": "reinforcement_learning",
+                            "机器学习": "machine_learning",
+                            "深度学习": "deep_learning",
+                            "自然语言处理": "nlp",
+                            "计算机视觉": "computer_vision",
+                            "目标检测": "object_detection",
+                            "图像分割": "image_segmentation",
+                            "生成对抗网络": "gan",
+                            " transformer": "transformer",
+                            "大语言模型": "llm",
+                            "多模态": "multimodal",
+                            "元学习": "meta_learning",
+                            "迁移学习": "transfer_learning",
+                            "联邦学习": "federated_learning",
+                            "因果推理": "causal_inference",
+                        }
+                        category = None
+                        for key, value in query_to_category.items():
+                            if key in user_query:
+                                category = value
+                                break
+                        if category is None:
+                            # 回退：使用搜索关键词
+                            category = search_keywords[0].replace(" ", "_").replace("/", "_")[:30] if search_keywords else "general"
+                    else:
+                        # 英文查询：直接使用
+                        category = user_query.replace(" ", "_").replace("/", "_")[:30].lower()
+                else:
+                    # 没有用户查询，回退到搜索关键词
+                    category = search_keywords[0].replace(" ", "_").replace("/", "_")[:30] if search_keywords else "general"
 
                 # 创建领域目录
                 category_dir = papers_dir / category
@@ -309,7 +351,20 @@ def retrieval_node(state: GraphState) -> GraphState:
                 state["papers_saved_path"] = str(all_papers_file)
                 state["current_category"] = category
                 state["pdfs_dir"] = str(pdfs_dir)
+                logger.info(f"DEBUG: Set pdfs_dir in retrieval_node: {pdfs_dir}")
                 state["papers_saved_path"] = str(all_papers_file)
+
+                # 在retrieval_node中同步下载PDF，避免状态传递丢失问题
+                logger.info(f"Downloading PDFs to: {pdfs_dir}")
+                from src.agents.reader import ReaderAgent
+                agent = ReaderAgent(max_workers=4)
+                # 只下载有pdf_url的论文
+                papers_with_pdf = [p for p in state["search_results"] if p.get("pdf_url")]
+                logger.info(f"Downloading {len(papers_with_pdf)} PDFs...")
+                download_result = agent.run(papers_with_pdf, download_dir=str(pdfs_dir))
+                logger.info(f"PDF download completed: {download_result.completed}/{download_result.total_papers} papers downloaded")
+                state["literature_data"] = download_result.literature_data
+                state["reading_errors"] = download_result.reading_summary.get("failed_papers", [])
             except Exception as e:
                 logger.warning(f"Failed to save papers metadata: {e}")
 
@@ -338,31 +393,32 @@ def retrieval_node(state: GraphState) -> GraphState:
 
 @traceable(name="reading_node")
 def reading_node(state: GraphState) -> GraphState:
-    """Reader agent node - download and parse papers."""
+    """Reader agent node - parse downloaded PDFs (downloaded in retrieval_node)."""
     logger.info(">>> Entering READING node")
     state["current_phase"] = PipelinePhase.READING
 
     try:
-        papers_to_read = state.get("search_results", [])
-        logger.info(f"Starting to read {len(papers_to_read)} papers")
+        # 如果已经在retrieval_node中下载并解析过了，直接使用之前的结果
+        if state.get("literature_data"):
+            logger.info("Using pre-downloaded literature data from retrieval_node")
+            logger.info(
+                f"Reading completed: {len(state.get('literature_data', []))} papers parsed"
+            )
+            return state
 
-        # 获取之前创建的PDFs目录，使用绝对路径
+        # 如果没有预先下载的数据，回退到旧的逻辑（保留兼容性）
+        papers_to_read = state.get("search_results", [])
+        logger.info(f"Starting to read {len(papers_to_read)} papers (fallback mode)")
+
         import os
         base_dir = os.path.abspath(".")
         pdfs_dir = state.get("pdfs_dir", os.path.join(base_dir, "data/papers/pdfs"))
-
-        # 转换为绝对路径
         if not os.path.isabs(pdfs_dir):
             pdfs_dir = os.path.join(base_dir, pdfs_dir)
+        logger.info(f"PDF directory: {pdfs_dir}")
 
-        logger.info(f"PDF download directory: {pdfs_dir}")
-
-        # papers_to_read is already a list of dicts from MCP API search
-        # No need to convert to ArxivPaper - ReaderAgent handles dicts directly
-
+        from src.agents.reader import ReaderAgent
         agent = ReaderAgent(max_workers=4)
-        logger.debug(f"ReaderAgent initialized with {agent.max_workers} workers")
-
         result = agent.run(papers_to_read, download_dir=pdfs_dir)
 
         state["literature_data"] = result.literature_data

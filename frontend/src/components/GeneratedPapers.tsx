@@ -18,6 +18,30 @@ export default function GeneratedPapers() {
   const [selectedPaper, setSelectedPaper] = useState<GeneratedPaper | null>(null)
   const [previewContent, setPreviewContent] = useState('')
 
+  // 加载预览内容
+  const loadPreviewContent = async (paper: GeneratedPaper) => {
+    setSelectedPaper(paper)
+    try {
+      // 优先尝试加载 .txt 文件（纯文本格式，更适合预览）
+      const txtFilename = paper.filename.replace('.md', '.txt')
+      let response = await fetch(`/data/outputs/${txtFilename}`)
+
+      // 如果没有 .txt 文件，尝试 .md 文件
+      if (!response.ok) {
+        response = await fetch(`/data/outputs/${paper.filename}`)
+      }
+
+      if (response.ok) {
+        const content = await response.text()
+        setPreviewContent(content)
+      } else {
+        setPreviewContent(`# ${paper.title}\n\n（预览内容加载失败）`)
+      }
+    } catch {
+      setPreviewContent(`# ${paper.title}\n\n（预览内容加载失败）`)
+    }
+  }
+
   // 从API获取文件列表
   useEffect(() => {
     const loadPapers = async () => {
@@ -26,10 +50,10 @@ export default function GeneratedPapers() {
         if (response.ok) {
           const data = await response.json()
           const papersList: GeneratedPaper[] = data.files
-            .filter((f: any) => f.name.endsWith('.md'))
+            .filter((f: any) => f.name.endsWith('.md') || f.name.endsWith('.txt'))
             .map((f: any, index: number) => {
               // 从文件名提取标题（去掉时间戳后缀）
-              const nameWithoutExt = f.name.replace('.md', '')
+              const nameWithoutExt = f.name.replace(/\.(md|txt)$/, '')
               // 尝试分割时间戳格式：xxx_20260606_095415
               const match = nameWithoutExt.match(/^(.+)_(\d{8}_\d{6})$/)
               const title = match ? match[1] : nameWithoutExt
@@ -43,7 +67,16 @@ export default function GeneratedPapers() {
                 filename: f.name
               }
             })
+          // 按修改时间倒序，最新的在前面
+          papersList.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
           setPapers(papersList)
+
+          // 默认选择最新的论文
+          if (papersList.length > 0) {
+            setSelectedPaper(papersList[0])
+            // 自动加载最新论文的预览内容
+            loadPreviewContent(papersList[0])
+          }
         }
       } catch (error) {
         console.error('加载文件列表失败:', error)
@@ -61,18 +94,7 @@ export default function GeneratedPapers() {
   )
 
   const handlePreview = async (paper: GeneratedPaper) => {
-    setSelectedPaper(paper)
-    try {
-      const response = await fetch(`/data/outputs/${paper.filename}`)
-      if (response.ok) {
-        const content = await response.text()
-        setPreviewContent(content)
-      } else {
-        setPreviewContent(`# ${paper.title}\n\n（预览内容加载失败）`)
-      }
-    } catch {
-      setPreviewContent(`# ${paper.title}\n\n（预览内容加载失败）`)
-    }
+    await loadPreviewContent(paper)
   }
 
   const handleDownload = (paper: GeneratedPaper) => {
