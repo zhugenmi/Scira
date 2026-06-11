@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import Sidebar from './components/Sidebar'
 import ChatView from './components/ChatView'
@@ -12,11 +12,23 @@ type View = 'chat' | 'generated' | 'downloaded' | 'knowledge'
 export default function App() {
   const [currentView, setCurrentView] = useState<View>('chat')
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false)
+  const [chatKey, setChatKey] = useState(0)  // 用于刷新 ChatView
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
+
+  const handleNewSession = useCallback(() => {
+    setSelectedSessionId(null)
+    setChatKey(prev => prev + 1)
+  }, [])
+
+  const handleSelectSession = useCallback((sessionId: string) => {
+    setSelectedSessionId(sessionId)
+    setChatKey(prev => prev + 1)
+  }, [])
 
   const renderView = () => {
     switch (currentView) {
       case 'chat':
-        return <ChatView />
+        return <ChatView key={chatKey} sessionId={selectedSessionId} />
       case 'generated':
         return <GeneratedPapers />
       case 'downloaded':
@@ -24,7 +36,7 @@ export default function App() {
       case 'knowledge':
         return <KnowledgeBase />
       default:
-        return <ChatView />
+        return <ChatView key={chatKey} />
     }
   }
 
@@ -40,6 +52,8 @@ export default function App() {
           onViewChange={setCurrentView}
           isCollapsed={isSidebarCollapsed}
           onToggleCollapse={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
+          onNewSession={handleNewSession}
+          onSelectSession={handleSelectSession}
         />
 
         {/* 主内容区域 */}

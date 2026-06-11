@@ -16,6 +16,8 @@ interface SidebarProps {
   onViewChange: (view: View) => void
   isCollapsed: boolean
   onToggleCollapse: () => void
+  onNewSession?: () => void
+  onSelectSession?: (sessionId: string) => void
 }
 
 interface MenuItem {
@@ -54,11 +56,14 @@ export default function Sidebar({
   currentView,
   onViewChange,
   isCollapsed,
-  onToggleCollapse
+  onToggleCollapse,
+  onNewSession,
+  onSelectSession
 }: SidebarProps) {
   const [generatedCount, setGeneratedCount] = useState(0)
   const [knowledgeCount, setKnowledgeCount] = useState(0)
   const [recentSessions, setRecentSessions] = useState<Session[]>([])
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
 
   // 从API获取真实数量和会话列表
   useEffect(() => {
@@ -145,6 +150,7 @@ export default function Sidebar({
       {/* 新建会话按钮 */}
       <div className="p-3">
         <button
+          onClick={() => onNewSession?.()}
           className={`w-full flex items-center justify-center gap-2 bg-primary-500 hover:bg-primary-600
                      text-white rounded-lg py-2.5 font-medium transition-all duration-200
                      hover:shadow-lg hover:shadow-primary-500/20 active:scale-95
@@ -207,9 +213,16 @@ export default function Sidebar({
               recentSessions.map((session) => (
                 <button
                   key={session.session_id}
-                  className="w-full flex flex-col items-start gap-0.5 px-2 py-1.5 rounded-md
-                           text-dark-muted hover:bg-dark-border/30 hover:text-dark-text
-                           transition-colors text-left"
+                  onClick={() => {
+                    setCurrentSessionId(session.session_id)
+                    onSelectSession?.(session.session_id)
+                  }}
+                  className={`w-full flex flex-col items-start gap-0.5 px-2 py-1.5 rounded-md
+                           transition-colors text-left
+                           ${currentSessionId === session.session_id
+                             ? 'bg-primary-500/20 text-primary-400'
+                             : 'text-dark-muted hover:bg-dark-border/30 hover:text-dark-text'
+                           }`}
                 >
                   <span className="text-sm truncate w-full">
                     {session.research_topics?.length > 0
