@@ -1,12 +1,21 @@
 import { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Send, Sparkles, Bot, User, Loader2, Play } from 'lucide-react'
+import { Send, Sparkles, Bot, User, Loader2, Plus, Trash2, MessageSquare, Clock } from 'lucide-react'
 
 interface Message {
   id: string
   role: 'user' | 'assistant' | 'system'
   content: string
   timestamp: Date
+}
+
+interface Session {
+  session_id: string
+  created_at: string
+  updated_at: string
+  message_count: number
+  context_tokens: number
+  research_topics: string[]
 }
 
 type WorkflowStatus = 'idle' | 'running' | 'completed' | 'failed'
@@ -27,9 +36,92 @@ export default function ChatView() {
   const [progress, setProgress] = useState(0)
   const [currentPhase, setCurrentPhase] = useState('')
   const [sessionId, setSessionId] = useState<string | null>(null)
+  const [sessions, setSessions] = useState<Session[]>([])
+  const [showSessions, setShowSessions] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
+
+  // 加载会话列表
+  const loadSessions = async () => {
+    try {
+      const response = await fetch('/api/chat/sessions')
+      const data = await response.json()
+      if (data.sessions) {
+        setSessions(data.sessions)
+      }
+    } catch (error) {
+      console.error('Failed to load sessions:', error)
+    }
+  }
+
+  // 删除会话
+  const deleteSession = async (e: React.MouseEvent, sessionIdToDelete: string) => {
+    e.stopPropagation()
+    if (!confirm('确定要删除这个会话吗？')) return
+
+    try {
+      const response = await fetch(`/api/chat/session/${sessionIdToDelete}`, {
+        method: 'DELETE'
+      })
+      if (response.ok) {
+        // 如果删除的是当前会话，重置聊天
+        if (sessionId === sessionIdToDelete) {
+          setSessionId(null)
+          setMessages([{
+            id: 'welcome',
+            role: 'system',
+            content: '欢迎使用 Scira 科研助手！请输入您感兴趣的研究主题，我将为您检索相关论文并生成综述报告。您也可以询问之前研究过的主题，或进行简单的对话。',
+            timestamp: new Date()
+          }])
+        }
+        // 重新加载会话列表
+        loadSessions()
+      }
+    } catch (error) {
+      console.error('Failed to delete session:', error)
+    }
+  }
+
+  // 创建新会话
+  const createNewSession = () => {
+    setSessionId(null)
+    setMessages([{
+      id: 'welcome',
+      role: 'system',
+      content: '欢迎使用 Scira 科研助手！请输入您感兴趣的研究主题，我将为您检索相关论文并生成综述报告。您也可以询问之前研究过的主题，或进行简单的对话。',
+      timestamp: new Date()
+    }])
+    setShowSessions(false)
+  }
+
+  // 加载指定会话的历史
+  const loadSessionHistory = async (sid: string) => {
+    try {
+      setSessionId(sid)
+      const response = await fetch(`/api/chat/history/${sid}`)
+      if (response.ok) {
+        const data = await response.json()
+        if (data.messages && data.messages.length > 0) {
+          const historyMessages: Message[] = data.messages.map((msg: any, index: number) => ({
+            id: `${sid}-${index}`,
+            role: msg.role === 'user' ? 'user' : 'assistant',
+            content: msg.content,
+            timestamp: new Date(msg.timestamp || Date.now())
+          }))
+          setMessages([{
+            id: 'welcome',
+            role: 'system',
+            content: '欢迎使用 Scira 科研助手！请输入您感兴趣的研究主题，我将为您检索相关论文并生成综述报告。您也可以询问之前研究过的主题，或进行简单的对话。',
+            timestamp: new Date()
+          }, ...historyMessages])
+        }
+      }
+      setShowSessions(false)
+    } catch (error) {
+      console.error('Failed to load session history:', error)
+    }
+  }
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -202,7 +294,8 @@ export default function ChatView() {
 
   // Load session on mount
   useEffect(() => {
-    const loadSession = async () => {
+    const initSession = async () => {
+      await loadSessions()
       try {
         const response = await fetch('/api/chat/sessions')
         const data = await response.json()
@@ -233,11 +326,97 @@ export default function ChatView() {
       }
     }
 
-    loadSession()
+    initSession()
   }, [])
 
   return (
     <div className="h-full flex flex-col">
+      {/* 顶部会话管理栏 */}
+      <div className="flex items-center justify-between px-4 py-2 border-b border-dark-border bg-dark-surface/50">
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowSessions(!showSessions)}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-dark-border/50 hover:bg-dark-border
+                     text-dark-muted hover:text-dark-text rounded-lg transition-colors"
+          >
+            <MessageSquare className="w-4 h-4" />
+            会话
+          </button>
+          {sessionId && (
+            <span className="text-xs text-dark-muted">
+              {sessions.find(s => s.session_id === sessionId)?.message_count || 0} 条消息
+            </span>
+          )}
+        </div>
+        <button
+          onClick={createNewSession}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-primary-500/20 hover:bg-primary-500/30
+                   text-primary-400 rounded-lg transition-colors"
+        >
+          <Plus className="w-4 h-4" />
+          新会话
+        </button>
+      </div>
+
+      {/* 会话列表弹窗 */}
+      <AnimatePresence>
+        {showSessions && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            className="border-b border-dark-border bg-dark-surface overflow-hidden"
+          >
+            <div className="p-3 max-h-48 overflow-auto">
+              {sessions.length === 0 ? (
+                <div className="text-center text-dark-muted text-sm py-4">
+                  暂无会话记录
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {sessions.map((s) => (
+                    <div
+                      key={s.session_id}
+                      onClick={() => loadSessionHistory(s.session_id)}
+                      className={`flex items-center justify-between p-2 rounded-lg cursor-pointer transition-colors
+                        ${sessionId === s.session_id
+                          ? 'bg-primary-500/20 border border-primary-500/30'
+                          : 'hover:bg-dark-border/50'
+                        }`}
+                    >
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm text-dark-text truncate">
+                          {s.research_topics?.length > 0
+                            ? s.research_topics.join(', ')
+                            : '新会话'}
+                        </div>
+                        <div className="flex items-center gap-2 text-xs text-dark-muted">
+                          <Clock className="w-3 h-3" />
+                          {new Date(s.updated_at).toLocaleString('zh-CN', {
+                            month: 'numeric',
+                            day: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit'
+                          })}
+                          <span>· {s.message_count} 条消息</span>
+                        </div>
+                      </div>
+                      <button
+                        onClick={(e) => deleteSession(e, s.session_id)}
+                        className="p-1.5 text-dark-muted hover:text-red-400 hover:bg-red-400/10
+                                 rounded-lg transition-colors"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* 消息区域 */}
       <div className="flex-1 overflow-auto p-4 space-y-4">
         {messages.map((message) => (

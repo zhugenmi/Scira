@@ -25,6 +25,9 @@ MAX_CONTEXT_TOKENS = int(os.getenv("MAX_CONTEXT_TOKENS", "60000"))
 CONTEXT_COMPRESSION_THRESHOLD = float(os.getenv("CONTEXT_COMPRESSION_THRESHOLD", "0.8"))
 COMPRESSION_KEEP_RECENT = int(os.getenv("COMPRESSION_KEEP_RECENT", "5"))
 
+# 会话持久化配置
+SESSION_STORAGE_DIR = os.path.join(os.getenv("DATA_DIR", "data"), "sessions")
+
 
 # ==================== 数据模型 ====================
 
@@ -179,10 +182,108 @@ def _generate_simple_summary(messages: List[Dict[str, Any]]) -> str:
 # ==================== 会话管理 ====================
 
 class ConversationMemory:
-    """会话记忆管理器"""
+    """会话记忆管理器（支持持久化存储）"""
 
     def __init__(self):
         self.sessions: Dict[str, ChatSession] = {}
+        # 确保存储目录存在
+        os.makedirs(SESSION_STORAGE_DIR, exist_ok=True)
+        # 启动时加载所有会话
+        self._load_all_sessions()
+
+    def _get_session_file_path(self, session_id: str) -> str:
+        """获取会话文件路径"""
+        return os.path.join(SESSION_STORAGE_DIR, f"{session_id}.json")
+
+    def _load_session(self, session_id: str) -> Optional[ChatSession]:
+        """从文件加载单个会话"""
+        file_path = self._get_session_file_path(session_id)
+        if not os.path.exists(file_path):
+            return None
+
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            # 重建 ChatSession 对象
+            context_data = data.get("context", {})
+            context = ConversationContext(
+                research_topics=context_data.get("research_topics", []),
+                research_results=context_data.get("research_results", {}),
+                paper_ids=context_data.get("paper_ids", []),
+            )
+
+            session = ChatSession(
+                session_id=data["session_id"],
+                created_at=data["created_at"],
+                updated_at=data["updated_at"],
+                messages=data.get("messages", []),
+                context=context,
+                context_tokens=data.get("context_tokens", 0),
+                compressed=data.get("compressed", False),
+                summary=data.get("summary"),
+            )
+            logger.info(f"Loaded session from disk: {session_id}")
+            return session
+
+        except Exception as e:
+            logger.warning(f"Failed to load session {session_id}: {e}")
+            return None
+
+    def _load_all_sessions(self) -> None:
+        """从文件系统加载所有会话"""
+        if not os.path.exists(SESSION_STORAGE_DIR):
+            os.makedirs(SESSION_STORAGE_DIR, exist_ok=True)
+            return
+
+        for filename in os.listdir(SESSION_STORAGE_DIR):
+            if filename.endswith('.json'):
+                session_id = filename[:-5]  # 去掉 .json 后缀
+                session = self._load_session(session_id)
+                if session:
+                    self.sessions[session_id] = session
+
+        logger.info(f"Loaded {len(self.sessions)} sessions from disk")
+
+    def _save_session(self, session: ChatSession) -> None:
+        """将会话保存到文件"""
+        file_path = self._get_session_file_path(session.session_id)
+
+        try:
+            data = {
+                "session_id": session.session_id,
+                "created_at": session.created_at,
+                "updated_at": session.updated_at,
+                "messages": session.messages,
+                "context": {
+                    "research_topics": session.context.research_topics,
+                    "research_results": session.context.research_results,
+                    "paper_ids": session.context.paper_ids,
+                },
+                "context_tokens": session.context_tokens,
+                "compressed": session.compressed,
+                "summary": session.summary,
+            }
+
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+
+            logger.debug(f"Saved session to disk: {session.session_id}")
+
+        except Exception as e:
+            logger.warning(f"Failed to save session {session.session_id}: {e}")
+
+    def _delete_session_file(self, session_id: str) -> bool:
+        """删除会话文件"""
+        file_path = self._get_session_file_path(session_id)
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+                logger.info(f"Deleted session file: {session_id}")
+                return True
+            except Exception as e:
+                logger.warning(f"Failed to delete session file {session_id}: {e}")
+        return False
 
     def create_session(self, session_id: Optional[str] = None) -> ChatSession:
         """创建新会话"""
@@ -196,6 +297,8 @@ class ConversationMemory:
             updated_at=now,
         )
         self.sessions[session_id] = session
+        # 持久化保存
+        self._save_session(session)
         logger.info(f"Created session: {session_id}")
         return session
 
@@ -230,6 +333,9 @@ class ConversationMemory:
         if should_compress(session):
             session = compress_context(session)
 
+        # 持久化保存
+        self._save_session(session)
+
         return session
 
     def update_research_context(self, session_id: str, topic: str, result: Dict[str, Any]) -> None:
@@ -241,6 +347,9 @@ class ConversationMemory:
 
         session.context.research_results[topic] = result
         session.updated_at = datetime.now().isoformat()
+
+        # 持久化保存
+        self._save_session(session)
 
     def search_history(self, session_id: str, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
         """搜索历史消息"""
@@ -268,6 +377,8 @@ class ConversationMemory:
         """删除会话"""
         if session_id in self.sessions:
             del self.sessions[session_id]
+            # 删除持久化文件
+            self._delete_session_file(session_id)
             logger.info(f"Deleted session: {session_id}")
             return True
         return False

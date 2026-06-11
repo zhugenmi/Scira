@@ -25,6 +25,31 @@ interface MenuItem {
   badge?: number
 }
 
+interface Session {
+  session_id: string
+  created_at: string
+  updated_at: string
+  message_count: number
+  context_tokens: number
+  research_topics: string[]
+}
+
+function formatTimeAgo(dateString: string): string {
+  const date = new Date(dateString)
+  const now = new Date()
+  const diffMs = now.getTime() - date.getTime()
+  const diffMins = Math.floor(diffMs / 60000)
+  const diffHours = Math.floor(diffMs / 3600000)
+  const diffDays = Math.floor(diffMs / 86400000)
+
+  if (diffMins < 1) return '刚刚'
+  if (diffMins < 60) return `${diffMins}分钟前`
+  if (diffHours < 24) return `${diffHours}小时前`
+  if (diffDays === 1) return '昨天'
+  if (diffDays < 7) return `${diffDays}天前`
+  return `${Math.floor(diffDays / 7)}周前`
+}
+
 export default function Sidebar({
   currentView,
   onViewChange,
@@ -33,8 +58,9 @@ export default function Sidebar({
 }: SidebarProps) {
   const [generatedCount, setGeneratedCount] = useState(0)
   const [knowledgeCount, setKnowledgeCount] = useState(0)
+  const [recentSessions, setRecentSessions] = useState<Session[]>([])
 
-  // 从API获取真实数量
+  // 从API获取真实数量和会话列表
   useEffect(() => {
     const fetchCounts = async () => {
       try {
@@ -59,6 +85,23 @@ export default function Sidebar({
         }
       } catch (e) {
         console.error('Failed to fetch papers count:', e)
+      }
+
+      try {
+        // 获取会话列表
+        const sessionsRes = await fetch('/api/chat/sessions')
+        if (sessionsRes.ok) {
+          const sessionsData = await sessionsRes.json()
+          // 按更新时间排序，取最近5个
+          const sorted = (sessionsData.sessions || [])
+            .sort((a: Session, b: Session) =>
+              new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+            )
+            .slice(0, 5)
+          setRecentSessions(sorted)
+        }
+      } catch (e) {
+        console.error('Failed to fetch sessions:', e)
       }
     }
 
@@ -86,11 +129,11 @@ export default function Sidebar({
   ]
 
   // 模拟历史会话数据
-  const recentSessions = [
-    { id: '1', title: '深度强化学习研究', time: '2小时前' },
-    { id: '2', title: 'Transformer 架构分析', time: '昨天' },
-    { id: '3', title: '机器学习综述', time: '3天前' },
-  ]
+  // const recentSessions = [
+  //   { id: '1', title: '深度强化学习研究', time: '2小时前' },
+  //   { id: '2', title: 'Transformer 架构分析', time: '昨天' },
+  //   { id: '3', title: '机器学习综述', time: '3天前' },
+  // ]
 
   return (
     <motion.aside
@@ -156,17 +199,29 @@ export default function Sidebar({
             <span>最近会话</span>
           </div>
           <div className="space-y-1">
-            {recentSessions.map((session) => (
-              <button
-                key={session.id}
-                className="w-full flex flex-col items-start gap-0.5 px-2 py-1.5 rounded-md
-                         text-dark-muted hover:bg-dark-border/30 hover:text-dark-text
-                         transition-colors text-left"
-              >
-                <span className="text-sm truncate w-full">{session.title}</span>
-                <span className="text-xs text-dark-muted/60">{session.time}</span>
-              </button>
-            ))}
+            {recentSessions.length === 0 ? (
+              <div className="text-xs text-dark-muted px-2 py-2">
+                暂无会话记录
+              </div>
+            ) : (
+              recentSessions.map((session) => (
+                <button
+                  key={session.session_id}
+                  className="w-full flex flex-col items-start gap-0.5 px-2 py-1.5 rounded-md
+                           text-dark-muted hover:bg-dark-border/30 hover:text-dark-text
+                           transition-colors text-left"
+                >
+                  <span className="text-sm truncate w-full">
+                    {session.research_topics?.length > 0
+                      ? session.research_topics[0]
+                      : '新会话'}
+                  </span>
+                  <span className="text-xs text-dark-muted/60">
+                    {formatTimeAgo(session.updated_at)}
+                  </span>
+                </button>
+              ))
+            )}
           </div>
         </div>
       )}

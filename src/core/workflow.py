@@ -357,11 +357,18 @@ def retrieval_node(state: GraphState) -> GraphState:
                 # 在retrieval_node中同步下载PDF，避免状态传递丢失问题
                 logger.info(f"Downloading PDFs to: {pdfs_dir}")
                 from src.agents.reader import ReaderAgent
-                agent = ReaderAgent(max_workers=4)
-                # 只下载有pdf_url的论文
+                from config.settings import get_config
+
+                config = get_config()
+                max_pdf_download = config.max_pdf_download
+
+                # 根据配置限制下载数量
                 papers_with_pdf = [p for p in state["search_results"] if p.get("pdf_url")]
-                logger.info(f"Downloading {len(papers_with_pdf)} PDFs...")
-                download_result = agent.run(papers_with_pdf, download_dir=str(pdfs_dir))
+                papers_to_download = papers_with_pdf[:max_pdf_download]
+                logger.info(f"Limiting PDF download to {max_pdf_download} (configured), {len(papers_with_pdf)} available")
+
+                agent = ReaderAgent(max_workers=4)
+                download_result = agent.run(papers_to_download, download_dir=str(pdfs_dir))
                 logger.info(f"PDF download completed: {download_result.completed}/{download_result.total_papers} papers downloaded")
                 state["literature_data"] = download_result.literature_data
                 state["reading_errors"] = download_result.reading_summary.get("failed_papers", [])

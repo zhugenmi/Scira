@@ -62,7 +62,7 @@ class OrchestratorAgent(BaseAgent):
 - 如果用户请求帮助或说明 → 提供帮助信息
 - 如果消息不明确需要澄清 → 询问用户
 
-请始终以JSON格式返回分析结果。""",
+重要：所有回复请使用纯文本格式，不要使用 Markdown 语法（如 ##、**、*、- 等）。直接输出文本内容即可。""",
             config=config,
         )
 
@@ -70,6 +70,7 @@ class OrchestratorAgent(BaseAgent):
         self,
         user_message: str,
         session_context: Optional[Dict[str, Any]] = None,
+        message_history: Optional[List[Dict[str, Any]]] = None,
     ) -> IntentResult:
         """
         分析用户消息意图
@@ -77,6 +78,7 @@ class OrchestratorAgent(BaseAgent):
         Args:
             user_message: 用户消息
             session_context: 会话上下文（可选，包含之前的研究主题等）
+            message_history: 历史消息列表（可选，用于提供对话上下文）
 
         Returns:
             IntentResult: 意图分析结果
@@ -88,12 +90,27 @@ class OrchestratorAgent(BaseAgent):
             if topics:
                 context_info = f"\n当前会话已研究的主题：{', '.join(topics)}"
 
+        # 添加历史消息上下文
+        history_info = ""
+        if message_history and len(message_history) > 0:
+            # 只取最近5条消息
+            recent_history = message_history[-5:]
+            history_lines = []
+            for msg in recent_history:
+                role = "用户" if msg.get("role") == "user" else "助手"
+                content = msg.get("content", "")[:100]  # 限制长度
+                if content:
+                    history_lines.append(f"{role}: {content}")
+            if history_lines:
+                history_info = "\n\n对话历史（最近几条）：\n" + "\n".join(history_lines)
+
         prompt = f"""分析以下用户消息的意图：
 
 用户消息：{user_message}
 {context_info}
+{history_info}
 
-请返回JSON格式的分析结果：
+请返回JSON格式的分析结果，不要包含任何其他内容：
 {{
     "intent": "greeting|knowledge_query|new_research|clarification|help|unknown",
     "confidence": 0.0-1.0,
@@ -107,7 +124,9 @@ class OrchestratorAgent(BaseAgent):
 - knowledge_query: 询问已有知识、之前的研究、报告内容等
 - new_research: 新的研究主题、需要完整工作流的请求
 - clarification: 需要更多信息才能理解用户需求
-- help: 请求帮助或说明"""
+- help: 请求帮助或说明
+
+请直接返回 JSON，不要使用 Markdown 代码块格式。"""
 
         try:
             result = self.invoke_with_json(prompt)
@@ -148,6 +167,7 @@ class OrchestratorAgent(BaseAgent):
 - 介绍你可以帮助做什么（文献调研、论文写作、研究分析等）
 - 询问用户需要什么帮助
 
+请用纯文本格式回复，不要使用任何 Markdown 语法。
 {"请用中文回复" if has_chinese else "请用英文回复"}"""
 
         return self.invoke(prompt)
@@ -180,7 +200,8 @@ class OrchestratorAgent(BaseAgent):
 请基于搜索结果生成回复：
 - 如果找到相关内容，总结关键信息
 - 如果未找到，诚实地说明并建议用户可以进行新的研究
-- 保持专业、友好的语气"""
+- 保持专业、友好的语气
+- 请用纯文本格式回复，不要使用任何 Markdown 语法"""
 
         return self.invoke(prompt)
 
@@ -201,7 +222,7 @@ class OrchestratorAgent(BaseAgent):
 - 询问期望的输出形式（报告、论文、摘要等）
 - 询问是否有特定的时间范围或领域偏好
 
-保持友好和专业。"""
+请用纯文本格式回复，保持友好和专业。"""
 
         return self.invoke(prompt)
 
@@ -210,6 +231,7 @@ class OrchestratorAgent(BaseAgent):
         user_message: str,
         session_id: str,
         session_context: Optional[Dict[str, Any]] = None,
+        message_history: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """
         处理用户消息的主要入口
@@ -218,12 +240,13 @@ class OrchestratorAgent(BaseAgent):
             user_message: 用户消息
             session_id: 会话 ID
             session_context: 会话上下文
+            message_history: 历史消息列表
 
         Returns:
             处理结果字典
         """
         # 1. 分析意图
-        intent_result = self.analyze_intent(user_message, session_context)
+        intent_result = self.analyze_intent(user_message, session_context, message_history)
 
         result = {
             "session_id": session_id,
@@ -283,19 +306,19 @@ class OrchestratorAgent(BaseAgent):
         """生成帮助信息"""
         help_text = """我可以帮助您进行学术研究：
 
-📚 **文献调研**
+文献调研
 - 输入研究主题，自动搜索和整理相关论文
 - 提取论文核心信息，进行聚类分析
 
-✍️ **论文写作**
+论文写作
 - 基于文献分析生成论文大纲
 - 分章节自动撰写，支持多轮修订
 
-💬 **智能问答**
+智能问答
 - 询问已研究的主题，我会从知识库中查找
 - 简单问候可直接回复
 
-📋 **使用示例**
+使用示例
 - "帮我研究大语言模型在医疗领域的应用"
 - "之前的研究进展如何？"
 - "深度强化学习的研究现状"

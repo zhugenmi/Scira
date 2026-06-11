@@ -57,6 +57,7 @@ class SciraConfig(BaseModel):
     # Behavior
     auto_approve: bool = Field(default=False, description="Skip human approval steps")
     max_literature_count: int = Field(default=20, description="Max literature papers to process")
+    max_pdf_download: int = Field(default=10, description="Max PDFs to download per search")
 
     @classmethod
     def from_env(cls) -> "SciraConfig":
@@ -96,6 +97,7 @@ class SciraConfig(BaseModel):
             langsmith_project=os.getenv("LANGCHAIN_PROJECT", "scira-research-agent"),
             auto_approve=os.getenv("AUTO_APPROVE", "false").lower() == "true",
             max_literature_count=int(os.getenv("MAX_LITERATURE_COUNT", "20")),
+            max_pdf_download=int(os.getenv("MAX_PDF_DOWNLOAD", "10")),
         )
 
 
