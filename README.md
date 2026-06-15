@@ -16,7 +16,7 @@
 | 类别 | 技术 |
 |------|------|
 | 框架 | LangGraph、LangChain |
-| LLM | OpenAI (MiniMax-M2.5) |
+| LLM | OpenAI、Anthropic |
 | 前端 | React + TypeScript + Vite + Tailwind |
 | 后端 | FastAPI + Python 3.10+ |
 | 协议 | MCP (Model Context Protocol) |
@@ -101,14 +101,12 @@ cd frontend && npm install && npm run dev  # 前端 :5173
 1. 访问 http://localhost:5173
 2. 输入研究主题（如"深度学习在医学影像的应用"）
 3. 系统自动完成检索→阅读→分析→写作全流程
-4. 可在"生成论文"查看结果
-
-## 📄 文档
-
-详细技术文档见 `docs/` 目录：
-- `phase1_infrastructure.md` - 基础设施
-- `phase5_workflow.md` - 工作流设计
-- `phase11_multi_turn_dialogue.md` - 多轮对话
-
+4. 可在"报告生成"查看结果
+### 智能问答
+![alt text](images/hello.png)
+### 知识库管理
+![alt text](images/knowledge_base.png)
+### 论文精读
+![alt text](images/paper_reading.png)
 ---
 Powered by [LangGraph](https://langchain-ai.github.io/langgraph/) & [LangChain](https://python.langchain.com/)
