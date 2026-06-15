@@ -1,6 +1,11 @@
 import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { FileText, Download, Eye, Calendar, Search, Trash2 } from 'lucide-react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
+import rehypeKatex from 'rehype-katex'
+import 'katex/dist/katex.min.css'
 
 interface GeneratedPaper {
   id: string
@@ -9,6 +14,34 @@ interface GeneratedPaper {
   createdAt: string
   wordCount: number
   filename: string
+}
+
+const markdownComponents = {
+  h1: ({ children }: any) => <h1 className="text-3xl font-bold text-dark-text border-b border-dark-border pb-3 mb-6 mt-2">{children}</h1>,
+  h2: ({ children }: any) => <h2 className="text-2xl font-bold text-primary-400 mt-8 mb-4 flex items-center gap-2"><span className="w-1 h-6 bg-primary-500 rounded"></span>{children}</h2>,
+  h3: ({ children }: any) => <h3 className="text-xl font-semibold text-dark-text mt-6 mb-3">{children}</h3>,
+  h4: ({ children }: any) => <h4 className="text-lg font-semibold text-dark-text mt-4 mb-2">{children}</h4>,
+  p: ({ children }: any) => <p className="text-dark-text leading-relaxed mb-4 text-base">{children}</p>,
+  ul: ({ children }: any) => <ul className="list-disc list-inside space-y-2 mb-4 text-dark-text ml-2">{children}</ul>,
+  ol: ({ children }: any) => <ol className="list-decimal list-inside space-y-2 mb-4 text-dark-text ml-2">{children}</ol>,
+  li: ({ children }: any) => <li className="text-dark-text leading-relaxed">{children}</li>,
+  strong: ({ children }: any) => <strong className="text-primary-400 font-semibold">{children}</strong>,
+  em: ({ children }: any) => <em className="text-primary-300 italic">{children}</em>,
+  code: ({ children, className }: any) => {
+    const isInline = !className
+    return isInline
+      ? <code className="text-primary-400 bg-dark-surface px-1.5 py-0.5 rounded text-sm font-mono">{children}</code>
+      : <code className={`${className} block`}>{children}</code>
+  },
+  pre: ({ children }: any) => <pre className="bg-dark-surface border border-dark-border rounded-lg p-4 overflow-x-auto mb-4 text-sm">{children}</pre>,
+  blockquote: ({ children }: any) => <blockquote className="border-l-4 border-primary-500 pl-4 py-2 my-4 bg-primary-500/5 text-dark-muted italic">{children}</blockquote>,
+  table: ({ children }: any) => <div className="overflow-x-auto mb-4 rounded-lg border border-dark-border"><table className="min-w-full divide-y divide-dark-border">{children}</table></div>,
+  thead: ({ children }: any) => <thead className="bg-dark-surface">{children}</thead>,
+  th: ({ children }: any) => <th className="px-4 py-2 text-left text-sm font-semibold text-primary-400 border-r border-dark-border last:border-r-0">{children}</th>,
+  td: ({ children }: any) => <td className="px-4 py-2 text-sm text-dark-text border-r border-dark-border last:border-r-0">{children}</td>,
+  tr: ({ children }: any) => <tr className="border-b border-dark-border hover:bg-dark-surface/50 transition-colors">{children}</tr>,
+  a: ({ children, href }: any) => <a href={href} className="text-primary-400 hover:text-primary-300 underline" target="_blank" rel="noopener noreferrer">{children}</a>,
+  hr: () => <hr className="my-6 border-dark-border" />,
 }
 
 export default function GeneratedPapers() {
@@ -22,15 +55,7 @@ export default function GeneratedPapers() {
   const loadPreviewContent = async (paper: GeneratedPaper) => {
     setSelectedPaper(paper)
     try {
-      // 优先尝试加载 .txt 文件（纯文本格式，更适合预览）
-      const txtFilename = paper.filename.replace('.md', '.txt')
-      let response = await fetch(`/data/outputs/${txtFilename}`)
-
-      // 如果没有 .txt 文件，尝试 .md 文件
-      if (!response.ok) {
-        response = await fetch(`/data/outputs/${paper.filename}`)
-      }
-
+      const response = await fetch(`/data/outputs/${paper.filename}`)
       if (response.ok) {
         const content = await response.text()
         setPreviewContent(content)
@@ -50,11 +75,9 @@ export default function GeneratedPapers() {
         if (response.ok) {
           const data = await response.json()
           const papersList: GeneratedPaper[] = data.files
-            .filter((f: any) => f.name.endsWith('.md') || f.name.endsWith('.txt'))
+            .filter((f: any) => f.name.endsWith('.md'))
             .map((f: any, index: number) => {
-              // 从文件名提取标题（去掉时间戳后缀）
-              const nameWithoutExt = f.name.replace(/\.(md|txt)$/, '')
-              // 尝试分割时间戳格式：xxx_20260606_095415
+              const nameWithoutExt = f.name.replace(/\.md$/, '')
               const match = nameWithoutExt.match(/^(.+)_(\d{8}_\d{6})$/)
               const title = match ? match[1] : nameWithoutExt
 
@@ -63,18 +86,14 @@ export default function GeneratedPapers() {
                 title: title,
                 topic: '研究论文',
                 createdAt: new Date(f.modified * 1000).toLocaleString('zh-CN'),
-                wordCount: Math.round(f.size / 5), // 估算字数
+                wordCount: Math.round(f.size / 5),
                 filename: f.name
               }
             })
-          // 按修改时间倒序，最新的在前面
           papersList.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
           setPapers(papersList)
 
-          // 默认选择最新的论文
           if (papersList.length > 0) {
-            setSelectedPaper(papersList[0])
-            // 自动加载最新论文的预览内容
             loadPreviewContent(papersList[0])
           }
         }
@@ -93,10 +112,6 @@ export default function GeneratedPapers() {
     paper.topic.toLowerCase().includes(searchQuery.toLowerCase())
   )
 
-  const handlePreview = async (paper: GeneratedPaper) => {
-    await loadPreviewContent(paper)
-  }
-
   const handleDownload = (paper: GeneratedPaper) => {
     window.open(`/data/outputs/${paper.filename}`, '_blank')
   }
@@ -108,9 +123,7 @@ export default function GeneratedPapers() {
           method: 'DELETE'
         })
         if (response.ok) {
-          // 从列表中移除
           setPapers(papers.filter(p => p.filename !== paper.filename))
-          // 如果删除的是当前选中的，清空选择
           if (selectedPaper?.filename === paper.filename) {
             setSelectedPaper(null)
             setPreviewContent('')
@@ -167,7 +180,7 @@ export default function GeneratedPapers() {
                     ? 'bg-primary-500/10 border-primary-500/50'
                     : 'bg-dark-surface border-dark-border hover:border-primary-500/30'
                   }`}
-                onClick={() => setSelectedPaper(paper)}
+                onClick={() => loadPreviewContent(paper)}
               >
                 <div className="flex items-start justify-between mb-2">
                   <div className="flex items-center gap-2">
@@ -211,7 +224,7 @@ export default function GeneratedPapers() {
               </h2>
               <div className="flex gap-2">
                 <button
-                  onClick={() => handlePreview(selectedPaper)}
+                  onClick={() => loadPreviewContent(selectedPaper)}
                   className="flex items-center gap-2 px-4 py-2 bg-dark-surface border border-dark-border
                            rounded-lg text-sm text-dark-text hover:border-primary-500/50 transition-colors"
                 >
@@ -229,14 +242,22 @@ export default function GeneratedPapers() {
               </div>
             </div>
 
-            {/* 预览内容 */}
+            {/* 预览内容 - Markdown渲染 */}
             <div className="flex-1 overflow-auto p-6">
               <div className="max-w-3xl mx-auto">
-                <div className="prose prose-invert prose-primary max-w-none">
-                  <pre className="whitespace-pre-wrap font-sans text-sm text-dark-text/90 leading-relaxed">
-                    {previewContent || '点击"预览"查看论文内容'}
-                  </pre>
-                </div>
+                <article className="paper-reading-result">
+                  {previewContent ? (
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm, remarkMath]}
+                      rehypePlugins={[rehypeKatex]}
+                      components={markdownComponents}
+                    >
+                      {previewContent}
+                    </ReactMarkdown>
+                  ) : (
+                    <p className="text-dark-muted text-sm">正在加载预览内容...</p>
+                  )}
+                </article>
               </div>
             </div>
           </>

@@ -645,23 +645,15 @@ def revision_node(state: GraphState) -> GraphState:
             # 保存Markdown格式的报告 - 直接在outputs/目录
             md_file = output_dir / f"{safe_topic}_{timestamp}.md"
             with open(md_file, "w", encoding="utf-8") as f:
-                # 添加标题和元信息
+                # 添加标题和元信息（不再单独写摘要，final_review已包含）
                 f.write(f"# {topic}\n\n")
                 f.write(f"**生成时间**: {dt.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
-                f.write(f"**摘要**: {state.get('abstract', '')}\n\n")
                 f.write("---\n\n")
-                # 写入正文
+                # 写入正文（final_review 已包含摘要、引言、正文、结论）
                 f.write(state.get("final_review", ""))
 
             logger.info(f"Final report saved to: {md_file}")
             state["report_path"] = str(md_file)
-
-            # 同时保存纯文本版本（不带标题和元信息）
-            txt_file = output_dir / f"{safe_topic}_{timestamp}.txt"
-            with open(txt_file, "w", encoding="utf-8") as f:
-                f.write(state.get("final_review", ""))
-
-            logger.info(f"Plain text report saved to: {txt_file}")
 
         except Exception as e:
             logger.warning(f"Failed to save final report: {e}")

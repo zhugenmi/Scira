@@ -296,13 +296,13 @@ class ReviewerAgent:
         """
         parts = []
 
-        # Abstract
-        parts.append("## Abstract\n")
+        # 摘要
+        parts.append("## 摘要\n\n")
         parts.append(abstract)
         parts.append("\n\n")
 
-        # Introduction
-        parts.append("## Introduction\n")
+        # 引言
+        parts.append("## 引言\n\n")
         parts.append(introduction)
         parts.append("\n\n")
 
@@ -310,8 +310,8 @@ class ReviewerAgent:
         parts.append(body)
         parts.append("\n\n")
 
-        # Conclusion
-        parts.append("## Conclusion\n")
+        # 结论
+        parts.append("## 结论\n\n")
         parts.append(conclusion)
 
         return "".join(parts)

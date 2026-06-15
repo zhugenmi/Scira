@@ -1,12 +1,13 @@
 import { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Send, Sparkles, Bot, User, Loader2, Plus, Trash2, MessageSquare, Clock, ChevronDown, ChevronUp } from 'lucide-react'
+import { Send, Sparkles, Bot, User, Loader2, Plus, Trash2, MessageSquare, Clock } from 'lucide-react'
 
 interface Message {
   id: string
   role: 'user' | 'assistant' | 'system'
   content: string
   timestamp: Date
+  workflowStatus?: string
 }
 
 interface Session {
@@ -18,21 +19,7 @@ interface Session {
   research_topics: string[]
 }
 
-// 工作流详细状态
-interface WorkflowDetails {
-  message: string
-  papers_found?: number
-  papers_to_download?: number
-  papers_downloading?: number
-  papers_downloaded?: string[]
-  current_downloading?: string
-  papers_reading?: number
-  total_papers?: number
-}
-
 type WorkflowStatus = 'idle' | 'running' | 'completed' | 'failed' | 'thinking'
-
-type ChatAction = 'direct_response' | 'knowledge_query' | 'start_workflow' | 'clarification' | 'help'
 
 interface ChatViewProps {
   sessionId?: string | null
@@ -49,14 +36,9 @@ export default function ChatView({ sessionId: initialSessionId }: ChatViewProps)
   ])
   const [input, setInput] = useState('')
   const [status, setStatus] = useState<WorkflowStatus>('idle')
-  const [progress, setProgress] = useState(0)
-  const [currentPhase, setCurrentPhase] = useState('')
   const [sessionId, setSessionId] = useState<string | null>(initialSessionId || null)
   const [sessions, setSessions] = useState<Session[]>([])
   const [showSessions, setShowSessions] = useState(false)
-  // 新增：工作流详细状态
-  const [workflowDetails, setWorkflowDetails] = useState<WorkflowDetails | null>(null)
-  const [showDetails, setShowDetails] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
@@ -175,10 +157,6 @@ export default function ChatView({ sessionId: initialSessionId }: ChatViewProps)
     }
 
     setStatus('running')
-    setProgress(0)
-    setCurrentPhase('正在启动...')
-    setWorkflowDetails(null)
-    setShowDetails(false)
 
     // 建立 SSE 连接
     const eventSource = new EventSource(`/api/workflow/stream/${taskId}`)
@@ -191,71 +169,58 @@ export default function ChatView({ sessionId: initialSessionId }: ChatViewProps)
 
         switch (data.type) {
           case 'workflow_started':
-            setCurrentPhase('已启动研究工作流')
-            setWorkflowDetails({ message: '正在准备研究环境...' })
+            setMessages(prev => prev.map(msg =>
+              msg.id === assistantMessageId
+                ? { ...msg, workflowStatus: '已启动研究工作流，正在准备...' }
+                : msg
+            ))
             break
 
           case 'thinking':
-            setStatus('thinking')
-            setCurrentPhase(data.data?.message || 'AI 正在思考...')
+            setMessages(prev => prev.map(msg =>
+              msg.id === assistantMessageId
+                ? { ...msg, workflowStatus: data.data?.message || 'AI 正在思考...' }
+                : msg
+            ))
             break
 
           case 'phase':
-            setCurrentPhase(data.data?.message || '')
-            setProgress((data.data?.progress || 0) * 100)
-            if (data.data?.phase === 'retrieval') {
-              setWorkflowDetails(prev => ({
-                ...prev,
-                message: data.data?.message || '论文检索中...',
-                papers_found: data.data?.papers_found
-              }))
-            }
+            setMessages(prev => prev.map(msg =>
+              msg.id === assistantMessageId
+                ? { ...msg, workflowStatus: data.data?.message || '' }
+                : msg
+            ))
             break
 
           case 'download':
-            setCurrentPhase(data.data?.message || '下载论文中...')
-            setProgress((data.data?.progress || 0.3) * 100)
-            setWorkflowDetails({
-              message: data.data?.message || '',
-              papers_to_download: data.data?.total,
-              papers_downloading: data.data?.current,
-              papers_downloaded: data.data?.downloaded || [],
-              current_downloading: data.data?.current_paper
-            })
-            setShowDetails(true)
+            setMessages(prev => prev.map(msg =>
+              msg.id === assistantMessageId
+                ? { ...msg, workflowStatus: data.data?.message || '下载论文中...' }
+                : msg
+            ))
             break
 
           case 'reading':
-            setCurrentPhase(data.data?.message || '阅读论文中...')
-            setProgress((data.data?.progress || 0.6) * 100)
-            setWorkflowDetails(prev => ({
-              ...prev,
-              message: data.data?.message || '',
-              papers_reading: data.data?.current,
-              total_papers: data.data?.total
-            }))
-            setShowDetails(true)
+            setMessages(prev => prev.map(msg =>
+              msg.id === assistantMessageId
+                ? { ...msg, workflowStatus: data.data?.message || '阅读论文中...' }
+                : msg
+            ))
             break
 
           case 'generation':
-            setCurrentPhase(data.data?.message || '生成报告中...')
-            const genProgress = data.data?.stage === 'outline' ? 0.7 : data.data?.stage === 'writing' ? 0.85 : 0.95
-            setProgress(genProgress * 100)
-            setWorkflowDetails({
-              message: data.data?.message || '',
-              total_papers: workflowDetails?.total_papers || 0
-            })
+            setMessages(prev => prev.map(msg =>
+              msg.id === assistantMessageId
+                ? { ...msg, workflowStatus: data.data?.message || '生成报告中...' }
+                : msg
+            ))
             break
 
           case 'complete':
-            setProgress(100)
-            setCurrentPhase('完成！')
             setStatus('completed')
-            setWorkflowDetails(null)
             eventSource.close()
             eventSourceRef.current = null
 
-            // 更新消息显示完成
             const topic = data.data?.topic || ''
             setMessages(prev => prev.map(msg =>
               msg.id === assistantMessageId
@@ -263,7 +228,8 @@ export default function ChatView({ sessionId: initialSessionId }: ChatViewProps)
                     ...msg,
                     content: topic
                       ? `已完成对「${topic}」的研究！您可以在"生成论文"页面查看生成的报告。`
-                      : '研究任务已完成！您可以在"生成论文"页面查看生成的报告。'
+                      : '研究任务已完成！您可以在"生成论文"页面查看生成的报告。',
+                    workflowStatus: undefined
                   }
                 : msg
             ))
@@ -271,14 +237,12 @@ export default function ChatView({ sessionId: initialSessionId }: ChatViewProps)
 
           case 'error':
             setStatus('failed')
-            setCurrentPhase('运行失败')
-            setWorkflowDetails({ message: data.data?.message || '未知错误' })
             eventSource.close()
             eventSourceRef.current = null
 
             setMessages(prev => prev.map(msg =>
               msg.id === assistantMessageId
-                ? { ...msg, content: `抱歉，运行过程中出现错误：${data.data?.message || '未知错误'}` }
+                ? { ...msg, content: `抱歉，运行过程中出现错误：${data.data?.message || '未知错误'}`, workflowStatus: undefined }
                 : msg
             ))
             break
@@ -304,7 +268,6 @@ export default function ChatView({ sessionId: initialSessionId }: ChatViewProps)
   // 保留轮询作为后备
   const startWorkflowPolling = (taskId: string, assistantMessageId: string) => {
     const phases = ['论文检索', '论文阅读', '文献分析', '大纲生成', '论文写作', '论文修订']
-    let currentProgress = 0
 
     pollIntervalRef.current = setInterval(async () => {
       try {
@@ -314,11 +277,8 @@ export default function ChatView({ sessionId: initialSessionId }: ChatViewProps)
         const data = await response.json()
 
         if (data.status === 'completed') {
-          // Workflow completed
           clearInterval(pollIntervalRef.current!)
           pollIntervalRef.current = null
-          setProgress(100)
-          setCurrentPhase('完成！')
           setStatus('completed')
 
           const researchTopic = data.result?.topic || ''
@@ -328,32 +288,32 @@ export default function ChatView({ sessionId: initialSessionId }: ChatViewProps)
                   ...msg,
                   content: researchTopic
                     ? `已完成对「${researchTopic}」的研究！您可以在"生成论文"页面查看生成的报告。`
-                    : '研究任务已完成！您可以在"生成论文"页面查看生成的报告。'
+                    : '研究任务已完成！您可以在"生成论文"页面查看生成的报告。',
+                  workflowStatus: undefined
                 }
               : msg
           ))
         } else if (data.status === 'failed') {
-          // Workflow failed
           clearInterval(pollIntervalRef.current!)
           pollIntervalRef.current = null
           setStatus('failed')
-          setCurrentPhase('运行失败')
           setMessages(prev => prev.map(msg =>
             msg.id === assistantMessageId
-              ? { ...msg, content: `抱歉，运行过程中出现错误：${data.error || '未知错误'}` }
+              ? { ...msg, content: `抱歉，运行过程中出现错误：${data.error || '未知错误'}`, workflowStatus: undefined }
               : msg
           ))
         } else {
-          // Still running - update progress
           const phaseProgress = data.progress || 0
-          setProgress(Math.min(phaseProgress * 100, 95))
           if (data.phase) {
             const phaseIndex = phases.findIndex(p => data.phase.toLowerCase().includes(p.replace('论文', '')))
-            if (phaseIndex >= 0) {
-              setCurrentPhase(`正在${phases[phaseIndex]}...`)
-            } else {
-              setCurrentPhase(`工作中... (${Math.round(phaseProgress * 100)}%)`)
-            }
+            const statusText = phaseIndex >= 0
+              ? `正在${phases[phaseIndex]}...`
+              : `工作中... (${Math.round(phaseProgress * 100)}%)`
+            setMessages(prev => prev.map(msg =>
+              msg.id === assistantMessageId
+                ? { ...msg, workflowStatus: statusText }
+                : msg
+            ))
           }
         }
       } catch (error) {
@@ -382,11 +342,11 @@ export default function ChatView({ sessionId: initialSessionId }: ChatViewProps)
       id: assistantMessageId,
       role: 'assistant',
       content: '',
-      timestamp: new Date()
+      timestamp: new Date(),
+      workflowStatus: 'AI 正在思考...'
     }])
 
     setStatus('thinking')
-    setCurrentPhase('AI 正在思考...')
 
     try {
       // 使用流式端点
@@ -432,29 +392,39 @@ export default function ChatView({ sessionId: initialSessionId }: ChatViewProps)
 
             switch (data.type) {
               case 'thinking':
-                setCurrentPhase(data.data?.message || 'AI 正在思考...')
+                setMessages(prev => prev.map(msg =>
+                  msg.id === assistantMessageId
+                    ? { ...msg, workflowStatus: data.data?.message || 'AI 正在思考...' }
+                    : msg
+                ))
                 break
 
               case 'response_start':
                 currentContent = data.data?.content || ''
+                setMessages(prev => prev.map(msg =>
+                  msg.id === assistantMessageId
+                    ? { ...msg, content: currentContent, workflowStatus: undefined }
+                    : msg
+                ))
                 break
 
               case 'token':
-                // 逐字添加内容
                 currentContent += data.data?.token || ''
                 setMessages(prev => prev.map(msg =>
                   msg.id === assistantMessageId
-                    ? { ...msg, content: currentContent }
+                    ? { ...msg, content: currentContent, workflowStatus: undefined }
                     : msg
                 ))
                 break
 
               case 'workflow_started':
-                // 工作流模式
                 taskId = data.data?.task_id
                 setStatus('running')
-                setCurrentPhase(data.data?.message || '工作流已启动')
-                // 更新 session_id
+                setMessages(prev => prev.map(msg =>
+                  msg.id === assistantMessageId
+                    ? { ...msg, workflowStatus: data.data?.message || '工作流已启动' }
+                    : msg
+                ))
                 if (data.data?.session_id && !sessionId) {
                   setSessionId(data.data.session_id)
                 }
@@ -462,18 +432,24 @@ export default function ChatView({ sessionId: initialSessionId }: ChatViewProps)
 
               case 'response_done':
                 if (taskId) {
-                  // 订阅工作流状态
                   startWorkflowSSE(taskId, assistantMessageId)
                 } else {
                   setStatus('completed')
-                  setCurrentPhase('完成')
+                  setMessages(prev => prev.map(msg =>
+                    msg.id === assistantMessageId
+                      ? { ...msg, workflowStatus: undefined }
+                      : msg
+                  ))
                 }
                 break
 
               case 'complete':
-                setProgress(100)
-                setCurrentPhase('完成！')
                 setStatus('completed')
+                setMessages(prev => prev.map(msg =>
+                  msg.id === assistantMessageId
+                    ? { ...msg, workflowStatus: undefined }
+                    : msg
+                ))
                 break
             }
           } catch (err) {
@@ -484,10 +460,9 @@ export default function ChatView({ sessionId: initialSessionId }: ChatViewProps)
 
     } catch (error) {
       setStatus('failed')
-      setCurrentPhase('运行失败')
       setMessages(prev => prev.map(msg =>
         msg.id === assistantMessageId
-          ? { ...msg, content: `抱歉，请求过程中出现错误：${error instanceof Error ? error.message : '未知错误'}` }
+          ? { ...msg, content: `抱歉，请求过程中出现错误：${error instanceof Error ? error.message : '未知错误'}`, workflowStatus: undefined }
           : msg
       ))
     }
@@ -696,6 +671,12 @@ export default function ChatView({ sessionId: initialSessionId }: ChatViewProps)
                 }`}>
                 {message.content}
               </div>
+              {message.role === 'assistant' && message.workflowStatus && (
+                <div className="flex items-center gap-1.5 mt-1 text-xs text-dark-muted">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  {message.workflowStatus}
+                </div>
+              )}
               <div className={`text-xs text-dark-muted mt-1 ${message.role === 'user' ? 'text-right' : ''}`}>
                 {message.timestamp.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
               </div>
@@ -704,93 +685,6 @@ export default function ChatView({ sessionId: initialSessionId }: ChatViewProps)
         ))}
         <div ref={messagesEndRef} />
       </div>
-
-      {/* 运行状态 */}
-      <AnimatePresence>
-        {(status === 'running' || status === 'thinking') && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            className="border-t border-dark-border bg-dark-surface/50"
-          >
-            <div className="p-4 space-y-3">
-              <div className="flex items-center justify-between text-sm">
-                <div className="flex items-center gap-2">
-                  {status === 'thinking' ? (
-                    <Loader2 className="w-4 h-4 text-primary-400 animate-spin" />
-                  ) : (
-                    <Loader2 className="w-4 h-4 text-primary-400 animate-spin" />
-                  )}
-                  <span className="text-dark-muted">{currentPhase}</span>
-                </div>
-                <span className="text-primary-400 font-medium">{Math.round(progress)}%</span>
-              </div>
-              <div className="h-1.5 bg-dark-border rounded-full overflow-hidden">
-                <motion.div
-                  className="h-full bg-gradient-to-r from-primary-500 to-primary-400"
-                  initial={{ width: 0 }}
-                  animate={{ width: `${progress}%` }}
-                  transition={{ duration: 0.3 }}
-                />
-              </div>
-              {/* 详细状态 - 可展开/折叠 */}
-              {workflowDetails && (
-                <div className="mt-2">
-                  <button
-                    onClick={() => setShowDetails(!showDetails)}
-                    className="flex items-center gap-1 text-xs text-dark-muted hover:text-dark-text transition-colors"
-                  >
-                    {showDetails ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                    <span>详细信息</span>
-                  </button>
-                  <AnimatePresence>
-                    {showDetails && (
-                      <motion.div
-                        initial={{ height: 0, opacity: 0 }}
-                        animate={{ height: 'auto', opacity: 1 }}
-                        exit={{ height: 0, opacity: 0 }}
-                        className="mt-2 text-xs text-dark-muted space-y-1 overflow-hidden"
-                      >
-                        {/* 下载进度详情 */}
-                        {workflowDetails.papers_to_download !== undefined && (
-                          <div>
-                            <div>下载进度：{workflowDetails.papers_downloading}/{workflowDetails.papers_to_download}</div>
-                            {workflowDetails.current_downloading && (
-                              <div className="text-primary-400/70 ml-2 truncate">
-                                正在下载: {workflowDetails.current_downloading}
-                              </div>
-                            )}
-                            {workflowDetails.papers_downloaded && workflowDetails.papers_downloaded.length > 0 && (
-                              <div className="ml-2 space-y-0.5">
-                                <div>已完成：</div>
-                                {workflowDetails.papers_downloaded.slice(0, 5).map((title, idx) => (
-                                  <div key={idx} className="ml-2 text-dark-muted/70 truncate">• {title}</div>
-                                ))}
-                                {workflowDetails.papers_downloaded.length > 5 && (
-                                  <div className="text-dark-muted/50">...等 {workflowDetails.papers_downloaded.length} 篇</div>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                        {/* 阅读进度详情 */}
-                        {workflowDetails.papers_reading !== undefined && (
-                          <div>阅读进度：{workflowDetails.papers_reading}/{workflowDetails.total_papers}</div>
-                        )}
-                        {/* 论文检索详情 */}
-                        {workflowDetails.papers_found !== undefined && (
-                          <div>检索到 {workflowDetails.papers_found} 篇相关论文</div>
-                        )}
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
-              )}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
 
       {/* 输入区域 */}
       <div className="p-4 border-t border-dark-border">

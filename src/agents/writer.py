@@ -122,9 +122,13 @@ class WriterAgent:
 
             sections = []
             for s in data.get("sections", []):
+                # 过滤引言和结论章节，这些由审稿专家后置生成
+                title = s.get("title", "Untitled")
+                if any(kw in title for kw in ["引言", "绪论", "前言", "结论", "总结"]):
+                    continue
                 section = PaperSection(
                     section_id=s.get("section_id", f"section_{len(sections)+1}"),
-                    title=s.get("title", "Untitled"),
+                    title=title,
                     subsections=s.get("subsections", []),
                     key_points=s.get("key_points", []),
                 )
@@ -142,17 +146,16 @@ class WriterAgent:
             return self._default_outline(topic)
 
     def _default_outline(self, topic: str) -> PaperOutline:
-        """Create default outline structure."""
+        """Create default outline structure. 引言和结论由审稿专家生成，不包含在此。"""
         return PaperOutline(
             title=f"{topic} 研究报告",
             abstract_requirements="研究背景、研究问题、核心方法、主要发现、关键贡献",
             sections=[
-                PaperSection(section_id="intro", title="一、引言"),
-                PaperSection(section_id="background", title="二、研究背景与现状"),
-                PaperSection(section_id="methods", title="三、研究方法"),
-                PaperSection(section_id="experiments", title="四、实验与分析"),
-                PaperSection(section_id="results", title="五、结果与讨论"),
-                PaperSection(section_id="conclusion", title="六、结论"),
+                PaperSection(section_id="background", title="一、研究背景与现状"),
+                PaperSection(section_id="methods", title="二、研究方法"),
+                PaperSection(section_id="experiments", title="三、实验与分析"),
+                PaperSection(section_id="results", title="四、结果与讨论"),
+                PaperSection(section_id="future", title="五、未来研究方向"),
             ],
             total_estimated_words=5000,
             writing_style="学术风格",
@@ -410,7 +413,18 @@ Output ONLY the section content.
         for section in sorted_sections:
             if section.status == "completed" and section.content:
                 parts.append(f"\n\n## {section.title}\n\n")
-                parts.append(section.content)
+                # 去除内容开头可能重复的章节标题
+                content = section.content
+                title_stripped = section.title.lstrip('#').strip()
+                if content.startswith(title_stripped):
+                    content = content[len(title_stripped):].lstrip('\n').lstrip()
+                elif content.startswith(f"## {section.title}") or content.startswith(f"# {section.title}"):
+                    # 处理LLM在内容中添加Markdown标题的情况
+                    lines = content.split('\n')
+                    while lines and (lines[0].startswith('#') or lines[0].strip() == ''):
+                        lines.pop(0)
+                    content = '\n'.join(lines)
+                parts.append(content)
 
         return "".join(parts)
 

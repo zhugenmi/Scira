@@ -18,11 +18,13 @@ export default function App() {
 
   const handleNewSession = useCallback(() => {
     setSelectedSessionId(null)
+    setCurrentView('chat')
     setChatKey(prev => prev + 1)
   }, [])
 
   const handleSelectSession = useCallback((sessionId: string) => {
     setSelectedSessionId(sessionId)
+    setCurrentView('chat')
     setChatKey(prev => prev + 1)
   }, [])
 
