@@ -5,11 +5,12 @@ import {
   BookOpen,
   ChevronLeft,
   Plus,
-  History
+  History,
+  GraduationCap
 } from 'lucide-react'
 import { useState, useEffect } from 'react'
 
-type View = 'chat' | 'generated' | 'knowledge'
+type View = 'chat' | 'generated' | 'knowledge' | 'paper-reading'
 
 interface SidebarProps {
   currentView: View
@@ -130,6 +131,11 @@ export default function Sidebar({
       label: '知识库',
       icon: <BookOpen className="w-5 h-5" />,
       badge: knowledgeCount
+    },
+    {
+      id: 'paper-reading',
+      label: '论文精读',
+      icon: <GraduationCap className="w-5 h-5" />
     }
   ]
 

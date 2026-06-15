@@ -5,9 +5,10 @@ import ChatView from './components/ChatView'
 import GeneratedPapers from './components/GeneratedPapers'
 import DownloadedPapers from './components/DownloadedPapers'
 import KnowledgeBase from './components/KnowledgeBase'
+import PaperReading from './components/PaperReading'
 import Header from './components/Header'
 
-type View = 'chat' | 'generated' | 'downloaded' | 'knowledge'
+type View = 'chat' | 'generated' | 'downloaded' | 'knowledge' | 'paper-reading'
 
 export default function App() {
   const [currentView, setCurrentView] = useState<View>('chat')
@@ -35,6 +36,8 @@ export default function App() {
         return <DownloadedPapers />
       case 'knowledge':
         return <KnowledgeBase />
+      case 'paper-reading':
+        return <PaperReading />
       default:
         return <ChatView key={chatKey} />
     }
