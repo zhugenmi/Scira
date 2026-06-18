@@ -6,9 +6,10 @@ import {
   ChevronLeft,
   Plus,
   History,
-  GraduationCap
+  GraduationCap,
+  Trash2
 } from 'lucide-react'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 
 type View = 'chat' | 'generated' | 'knowledge' | 'paper-reading'
 
@@ -19,6 +20,7 @@ interface SidebarProps {
   onToggleCollapse: () => void
   onNewSession?: () => void
   onSelectSession?: (sessionId: string) => void
+  onSessionDeleted?: (sessionId: string) => void
 }
 
 interface MenuItem {
@@ -59,12 +61,49 @@ export default function Sidebar({
   isCollapsed,
   onToggleCollapse,
   onNewSession,
-  onSelectSession
+  onSelectSession,
+  onSessionDeleted
 }: SidebarProps) {
   const [generatedCount, setGeneratedCount] = useState(0)
   const [knowledgeCount, setKnowledgeCount] = useState(0)
   const [recentSessions, setRecentSessions] = useState<Session[]>([])
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
+
+  // 拉取最近会话列表（删除后复用同一逻辑刷新）
+  const loadRecentSessions = useCallback(async () => {
+    try {
+      const sessionsRes = await fetch('/api/chat/sessions')
+      if (sessionsRes.ok) {
+        const sessionsData = await sessionsRes.json()
+        const sorted = (sessionsData.sessions || [])
+          .sort((a: Session, b: Session) =>
+            new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+          )
+          .slice(0, 5)
+        setRecentSessions(sorted)
+      }
+    } catch (e) {
+      console.error('Failed to fetch sessions:', e)
+    }
+  }, [])
+
+  // 删除会话：复用后端已有的 /api/chat/session/{id} DELETE 接口
+  const handleDeleteSession = async (e: React.MouseEvent, sessionId: string) => {
+    e.stopPropagation()
+    if (!confirm('确定要删除这个会话吗？')) return
+    try {
+      const res = await fetch(`/api/chat/session/${sessionId}`, { method: 'DELETE' })
+      if (res.ok) {
+        if (currentSessionId === sessionId) {
+          setCurrentSessionId(null)
+        }
+        await loadRecentSessions()
+        onSessionDeleted?.(sessionId)
+      }
+    } catch (e) {
+      console.error('Failed to delete session:', e)
+    }
+  }
 
   // 从API获取真实数量和会话列表
   useEffect(() => {
@@ -93,26 +132,11 @@ export default function Sidebar({
         console.error('Failed to fetch papers count:', e)
       }
 
-      try {
-        // 获取会话列表
-        const sessionsRes = await fetch('/api/chat/sessions')
-        if (sessionsRes.ok) {
-          const sessionsData = await sessionsRes.json()
-          // 按更新时间排序，取最近5个
-          const sorted = (sessionsData.sessions || [])
-            .sort((a: Session, b: Session) =>
-              new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
-            )
-            .slice(0, 5)
-          setRecentSessions(sorted)
-        }
-      } catch (e) {
-        console.error('Failed to fetch sessions:', e)
-      }
+      loadRecentSessions()
     }
 
     fetchCounts()
-  }, [])
+  }, [loadRecentSessions])
 
   const menuItems: MenuItem[] = [
     {
@@ -217,20 +241,20 @@ export default function Sidebar({
               </div>
             ) : (
               recentSessions.map((session) => (
-                <button
+                <div
                   key={session.session_id}
-                  onClick={() => {
-                    setCurrentSessionId(session.session_id)
-                    onSelectSession?.(session.session_id)
-                  }}
-                  className={`w-full flex flex-col items-start gap-0.5 px-2 py-1.5 rounded-md
-                           transition-colors text-left
+                  className={`group relative w-full flex flex-col items-start gap-0.5 px-2 py-1.5 rounded-md
+                           transition-colors text-left cursor-pointer
                            ${currentSessionId === session.session_id
                              ? 'bg-primary-500/20 text-primary-400'
                              : 'text-dark-muted hover:bg-dark-border/30 hover:text-dark-text'
                            }`}
+                  onClick={() => {
+                    setCurrentSessionId(session.session_id)
+                    onSelectSession?.(session.session_id)
+                  }}
                 >
-                  <span className="text-sm truncate w-full">
+                  <span className="text-sm truncate w-full pr-6">
                     {session.research_topics?.length > 0
                       ? session.research_topics[0]
                       : '新会话'}
@@ -238,7 +262,14 @@ export default function Sidebar({
                   <span className="text-xs text-dark-muted/60">
                     {formatTimeAgo(session.updated_at)}
                   </span>
-                </button>
+                  <button
+                    onClick={(e) => handleDeleteSession(e, session.session_id)}
+                    className="absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded text-dark-muted/0 hover:text-red-400 hover:bg-red-400/10 opacity-0 group-hover:opacity-100 transition-all"
+                    title="删除会话"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               ))
             )}
           </div>

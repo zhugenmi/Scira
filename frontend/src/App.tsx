@@ -28,6 +28,14 @@ export default function App() {
     setChatKey(prev => prev + 1)
   }, [])
 
+  // 侧边栏删除会话后：若删除的正是当前会话，重置聊天视图
+  const handleSessionDeleted = useCallback((sessionId: string) => {
+    if (selectedSessionId === sessionId) {
+      setSelectedSessionId(null)
+      setChatKey(prev => prev + 1)
+    }
+  }, [selectedSessionId])
+
   const renderView = () => {
     switch (currentView) {
       case 'chat':
@@ -59,6 +67,7 @@ export default function App() {
           onToggleCollapse={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
           onNewSession={handleNewSession}
           onSelectSession={handleSelectSession}
+          onSessionDeleted={handleSessionDeleted}
         />
 
         {/* 主内容区域 */}
