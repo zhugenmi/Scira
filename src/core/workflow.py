@@ -137,10 +137,13 @@ def format_bibliography(reference_list: List[Dict[str, Any]]) -> str:
 
     期刊/会议论文格式：作者. 题名[J/EB/OL]. 出处, 年份.
     作者超过 3 位时用「等」省略。所有条目均来自检索/知识库，绝不由 LLM 生成。
+
+    条目之间用空行分隔：markdown 中单个 \\n 会被渲染成空格（软换行），
+    导致参考文献挤成一段；用 \\n\\n 让每条独立成段，保证一行一篇。
     """
     if not reference_list:
         return ""
-    lines = ["## 参考文献\n"]
+    entries = ["## 参考文献\n"]
     for i, r in enumerate(reference_list, 1):
         authors = r.get("authors") or []
         if isinstance(authors, str):
@@ -157,8 +160,9 @@ def format_bibliography(reference_list: List[Dict[str, Any]]) -> str:
         # 文献类型标识：预印本/开放获取用 [EB/OL]，其余默认 [J]
         doc_type = "[EB/OL]" if source in {"arxiv", "biorxiv", "medrxiv"} else "[J]"
         year_part = f", {year}" if year else ""
-        lines.append(f"[{i}] {author_str}. {title}{doc_type}{year_part}.")
-    return "\n".join(lines) + "\n"
+        entries.append(f"[{i}] {author_str}. {title}{doc_type}{year_part}.")
+    # 每条之间空一行，保证 markdown 渲染为独立段落
+    return "\n\n".join(entries) + "\n"
 
 
 
