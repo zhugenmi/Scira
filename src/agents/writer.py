@@ -195,6 +195,37 @@ class WriterAgent:
 
             global_knowledge = json.dumps(context.get('global_knowledge', {}), indent=2, ensure_ascii=False)
 
+            # 编号参考文献清单：要求 LLM 用 [n] 角标引用，n 对应清单中的序号
+            reference_list = context.get("reference_list") or []
+            if reference_list:
+                ref_lines = []
+                for i, r in enumerate(reference_list, 1):
+                    authors = r.get("authors") or []
+                    if isinstance(authors, str):
+                        authors = [a.strip() for a in authors.split(";") if a.strip()]
+                    author_str = ", ".join(authors[:3]) + (", 等" if len(authors) > 3 else "") if authors else "佚名"
+                    year = r.get("year", "")
+                    ref_lines.append(f"[{i}] {author_str}. {r.get('title','')}. {year}")
+                reference_block = "\n".join(ref_lines)
+                citation_instruction = (
+                    "\n\n# 参考文献引用要求（非常重要，必须严格遵守）\n"
+                    "下方提供了带编号的参考文献清单。这些文献全部来自系统实际检索/知识库，"
+                    "你不得自行编造任何清单之外的文献。\n"
+                    "撰写正文时，凡涉及某篇论文的方法、观点或结论，必须在对应处用方括号角标引用，"
+                    "例如「张三等人提出了XXX方法[1]」「相关工作表明[2,3]」。\n"
+                    "- 角标数字必须严格对应清单序号，严禁使用清单中不存在的编号。\n"
+                    "- 不得使用其他引用样式（如 (Author, Year)），统一使用 [n] 形式。\n"
+                    "- 若某论点无法对应到清单中任何一篇文献，则不写角标，绝不编造引用。\n"
+                    "- 参考文献目录将由系统自动生成（GB/T 7714-2015 格式），你只需在正文使用 [n] 角标，不要重复列出参考文献。\n"
+                    f"\n参考文献清单（仅可引用这些）：\n{reference_block}\n"
+                )
+            else:
+                citation_instruction = (
+                    "\n\n# 参考文献引用要求\n"
+                    "本次没有可用的参考文献清单。不要在正文中编造任何引用或角标，"
+                    "仅基于已知信息客观陈述，参考文献目录将由系统留空。\n"
+                )
+
             # Use the template prompt
             prompt = WRITER_SECTION_PROMPT.format(
                 style=style,
@@ -204,7 +235,7 @@ class WriterAgent:
                 references=references,
                 global_knowledge=global_knowledge,
                 word_count=500
-            )
+            ) + citation_instruction
 
             messages = [
                 SystemMessage(content=WRITER_SYSTEM),
@@ -434,6 +465,7 @@ Output ONLY the section content.
         topic: str,
         literature_clusters: Optional[List[Dict]] = None,
         max_workers: int = 3,
+        reference_list: Optional[List[Dict[str, Any]]] = None,
     ) -> WritingResult:
         """
         Run complete writing workflow.
@@ -443,6 +475,7 @@ Output ONLY the section content.
             topic: Research topic
             literature_clusters: Optional literature clusters
             max_workers: Parallel workers
+            reference_list: 带编号的参考文献清单，用于正文 [n] 角标引用
 
         Returns:
             WritingResult
@@ -456,6 +489,7 @@ Output ONLY the section content.
             "global_knowledge": global_knowledge,
             "literature_clusters": literature_clusters or [],
             "writing_style": outline.writing_style,
+            "reference_list": reference_list or [],
         }
 
         # Write sections (in order to maintain continuity)

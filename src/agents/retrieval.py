@@ -291,6 +291,8 @@ class RetrievalAgent:
         self,
         user_query: str,
         auto_approve: bool = False,
+        approved_topic: Optional[str] = None,
+        approved_keywords: Optional[List[str]] = None,
     ) -> RetrievalResult:
         """
         Run complete retrieval workflow.
@@ -298,34 +300,48 @@ class RetrievalAgent:
         Args:
             user_query: User research query
             auto_approve: Skip human approval if True
+            approved_topic: 用户已确认的规范化主题（来自检索审批）。
+                            提供时跳过 analyze_query，直接用该主题检索，
+                            避免对中文查询二次翻译得到空主题。
+            approved_keywords: 用户已确认的关键词，提供时直接用于策略生成。
 
         Returns:
             RetrievalResult with papers and metadata
         """
         errors = []
 
-        # Step 1: Analyze query
-        logger.info("=== Step 1: Analyzing query ===")
-        try:
-            analysis = self.analyze_query(user_query)
-            topic = analysis.get("normalized_topic", user_query)
-            key_concepts = analysis.get("key_concepts", [])
+        # Step 1: Analyze query（若已有审批通过的 topic/keywords 则跳过，直接复用）
+        if approved_topic:
+            topic = approved_topic.strip()
+            key_concepts = approved_keywords or []
+            logger.info(f"=== Step 1: Using APPROVED conditions (skip analyze) | topic='{topic}', concepts={key_concepts} ===")
+        else:
+            logger.info("=== Step 1: Analyzing query ===")
+            try:
+                analysis = self.analyze_query(user_query)
+                topic = analysis.get("normalized_topic", user_query)
+                key_concepts = analysis.get("key_concepts", [])
 
-            # If translation happened, use translated query
-            if "translated_query" in analysis:
-                topic = analysis.get("translated_query", topic)
+                # If translation happened, use translated query
+                if "translated_query" in analysis:
+                    topic = analysis.get("translated_query", topic)
 
-            # Fallback: if topic is still Chinese, use simple translation
-            if any('一' <= char <= '鿿' for char in topic):
+                # Fallback: if topic is still Chinese, use simple translation
+                if any('一' <= char <= '鿿' for char in topic):
+                    topic = self._simple_translate(user_query)
+
+                logger.info(f"Query analysis complete: topic='{topic}', key_concepts={key_concepts}")
+            except Exception as e:
+                errors.append(f"Query analysis failed: {e}")
+                # Fallback translation
                 topic = self._simple_translate(user_query)
+                key_concepts = []
+                logger.warning(f"Query analysis failed, using fallback: {e}")
 
-            logger.info(f"Query analysis complete: topic='{topic}', key_concepts={key_concepts}")
-        except Exception as e:
-            errors.append(f"Query analysis failed: {e}")
-            # Fallback translation
-            topic = self._simple_translate(user_query)
-            key_concepts = []
-            logger.warning(f"Query analysis failed, using fallback: {e}")
+        # 兜底：topic 为空（如翻译失败）时回退到 user_query，避免用空串检索
+        if not topic:
+            topic = user_query or "research"
+            logger.warning(f"topic empty after analysis, fallback to: {topic}")
 
         # Step 2: Generate search strategy
         logger.info("=== Step 2: Generating search strategy ===")

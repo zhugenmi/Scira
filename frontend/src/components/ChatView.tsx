@@ -1,6 +1,33 @@
 import { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Send, Sparkles, Bot, User, Loader2, Plus, Trash2, MessageSquare, Clock } from 'lucide-react'
+import { Send, Sparkles, Bot, User, Loader2, Plus, Trash2, MessageSquare, Clock, Check, X } from 'lucide-react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
+import rehypeKatex from 'rehype-katex'
+import 'katex/dist/katex.min.css'
+
+interface RetrievalConditions {
+  task_id?: string
+  normalized_topic?: string
+  key_concepts?: string[]
+  research_direction?: string
+  background_context?: string
+  boolean_query?: string
+  keywords?: string[]
+  categories?: string[]
+  date_range?: string[]
+  max_results?: number
+  rationale?: string
+  [k: string]: any
+}
+
+interface Approval {
+  taskId: string
+  conditions: RetrievalConditions
+  status: 'pending' | 'submitting' | 'approved'
+  error?: string
+}
 
 interface Message {
   id: string
@@ -8,6 +35,7 @@ interface Message {
   content: string
   timestamp: Date
   workflowStatus?: string
+  approval?: Approval
 }
 
 interface Session {
@@ -23,9 +51,11 @@ type WorkflowStatus = 'idle' | 'running' | 'completed' | 'failed' | 'thinking'
 
 interface ChatViewProps {
   sessionId?: string | null
+  pendingMessage?: string | null
+  onPendingConsumed?: () => void
 }
 
-export default function ChatView({ sessionId: initialSessionId }: ChatViewProps) {
+export default function ChatView({ sessionId: initialSessionId, pendingMessage, onPendingConsumed }: ChatViewProps) {
   const [messages, setMessages] = useState<Message[]>([
     {
       id: 'welcome',
@@ -43,6 +73,9 @@ export default function ChatView({ sessionId: initialSessionId }: ChatViewProps)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
   const eventSourceRef = useRef<EventSource | null>(null)
+  // 保存 messages 的最新引用，供 SSE 回调内读取（回调闭包会捕获旧 state）
+  const messagesRef = useRef<Message[]>(messages)
+  useEffect(() => { messagesRef.current = messages }, [messages])
 
   // 加载会话列表
   const loadSessions = async () => {
@@ -222,15 +255,28 @@ export default function ChatView({ sessionId: initialSessionId }: ChatViewProps)
             eventSourceRef.current = null
 
             const topic = data.data?.topic || ''
+            const mode = data.data?.workflow_mode || 'full'
+            const papersFound = data.data?.papers_found ?? 0
+            const papersDownloaded = data.data?.papers_downloaded ?? 0
+            const summary = data.data?.summary || ''
+            let completeText: string
+            if (mode === 'search') {
+              // search 模式优先展示后端生成的检索结果简介（含论文清单）
+              if (summary) {
+                completeText = summary
+              } else {
+                completeText = topic
+                  ? `已完成对「${topic}」的检索并下载 ${papersDownloaded} 篇论文，您可以在"知识库"页面查看。`
+                  : `已完成检索并下载 ${papersDownloaded} 篇论文，您可以在"知识库"页面查看。`
+              }
+            } else {
+              completeText = topic
+                ? `已完成对「${topic}」的研究！您可以在"生成论文"页面查看生成的报告。`
+                : '研究任务已完成！您可以在"生成论文"页面查看生成的报告。'
+            }
             setMessages(prev => prev.map(msg =>
               msg.id === assistantMessageId
-                ? {
-                    ...msg,
-                    content: topic
-                      ? `已完成对「${topic}」的研究！您可以在"生成论文"页面查看生成的报告。`
-                      : '研究任务已完成！您可以在"生成论文"页面查看生成的报告。',
-                    workflowStatus: undefined
-                  }
+                ? { ...msg, content: completeText, workflowStatus: undefined }
                 : msg
             ))
             break
@@ -267,7 +313,17 @@ export default function ChatView({ sessionId: initialSessionId }: ChatViewProps)
 
   // 保留轮询作为后备
   const startWorkflowPolling = (taskId: string, assistantMessageId: string) => {
-    const phases = ['论文检索', '论文阅读', '文献分析', '大纲生成', '论文写作', '论文修订']
+    // 后端 phase 字符串 → 前端展示文案（与 SSE 推送保持一致）
+    const phaseLabels: Record<string, string> = {
+      init: '已启动研究工作流，正在准备...',
+      retrieval: '论文检索中...',
+      retrieval_download: '论文下载中...',
+      reading: '论文阅读中...',
+      analysis: '文献分析中...',
+      outline: '生成论文大纲中...',
+      writing: '生成论文中...',
+      revision: '论文审查中...',
+    }
 
     pollIntervalRef.current = setInterval(async () => {
       try {
@@ -282,13 +338,29 @@ export default function ChatView({ sessionId: initialSessionId }: ChatViewProps)
           setStatus('completed')
 
           const researchTopic = data.result?.topic || ''
+          const pollMode = data.result?.workflow_mode || 'full'
+          const pollFound = data.result?.papers_found ?? 0
+          const pollDownloaded = data.result?.papers_downloaded ?? 0
+          const pollSummary = data.result?.summary || ''
+          let pollCompleteText: string
+          if (pollMode === 'search') {
+            if (pollSummary) {
+              pollCompleteText = pollSummary
+            } else {
+              pollCompleteText = researchTopic
+                ? `已完成对「${researchTopic}」的检索并下载 ${pollDownloaded} 篇论文，您可以在"知识库"页面查看。`
+                : `已完成检索并下载 ${pollDownloaded} 篇论文，您可以在"知识库"页面查看。`
+            }
+          } else {
+            pollCompleteText = researchTopic
+              ? `已完成对「${researchTopic}」的研究！您可以在"生成论文"页面查看生成的报告。`
+              : '研究任务已完成！您可以在"生成论文"页面查看生成的报告。'
+          }
           setMessages(prev => prev.map(msg =>
             msg.id === assistantMessageId
               ? {
                   ...msg,
-                  content: researchTopic
-                    ? `已完成对「${researchTopic}」的研究！您可以在"生成论文"页面查看生成的报告。`
-                    : '研究任务已完成！您可以在"生成论文"页面查看生成的报告。',
+                  content: pollCompleteText,
                   workflowStatus: undefined
                 }
               : msg
@@ -304,17 +376,15 @@ export default function ChatView({ sessionId: initialSessionId }: ChatViewProps)
           ))
         } else {
           const phaseProgress = data.progress || 0
-          if (data.phase) {
-            const phaseIndex = phases.findIndex(p => data.phase.toLowerCase().includes(p.replace('论文', '')))
-            const statusText = phaseIndex >= 0
-              ? `正在${phases[phaseIndex]}...`
-              : `工作中... (${Math.round(phaseProgress * 100)}%)`
-            setMessages(prev => prev.map(msg =>
-              msg.id === assistantMessageId
-                ? { ...msg, workflowStatus: statusText }
-                : msg
-            ))
-          }
+          // 优先用 details.message（后端进度回调写入），其次按 phase 映射
+          const statusText = data.details?.message
+            || phaseLabels[data.phase]
+            || `工作中... (${Math.round(phaseProgress * 100)}%)`
+          setMessages(prev => prev.map(msg =>
+            msg.id === assistantMessageId
+              ? { ...msg, workflowStatus: statusText }
+              : msg
+          ))
         }
       } catch (error) {
         console.error('Poll error:', error)
@@ -322,18 +392,19 @@ export default function ChatView({ sessionId: initialSessionId }: ChatViewProps)
     }, 2000)
   }
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!input.trim() || status === 'running') return
+  const sendMessage = async (text: string) => {
+    if (!text.trim() || status === 'running') return
 
     const userMessage: Message = {
       id: Date.now().toString(),
       role: 'user',
-      content: input.trim(),
+      content: text.trim(),
       timestamp: new Date()
     }
     setMessages(prev => [...prev, userMessage])
     setInput('')
+
+    const msgText = text.trim()
 
     // 添加助手消息占位
     const assistantMessageId = (Date.now() + 1).toString()
@@ -351,7 +422,7 @@ export default function ChatView({ sessionId: initialSessionId }: ChatViewProps)
     try {
       // 使用流式端点
       const requestBody: { message: string; session_id?: string } = {
-        message: userMessage.content
+        message: msgText
       }
       if (sessionId) {
         requestBody.session_id = sessionId
@@ -403,16 +474,19 @@ export default function ChatView({ sessionId: initialSessionId }: ChatViewProps)
                 currentContent = data.data?.content || ''
                 setMessages(prev => prev.map(msg =>
                   msg.id === assistantMessageId
-                    ? { ...msg, content: currentContent, workflowStatus: undefined }
+                    ? { ...msg, content: currentContent, workflowStatus: currentContent ? undefined : (msg.workflowStatus || 'AI 正在思考...') }
                     : msg
                 ))
                 break
 
               case 'token':
                 currentContent += data.data?.token || ''
+                // 保留 workflowStatus：响应期间持续显示状态（如「AI 正在思考...」+ 旋转图标），
+                // 避免长耗时阶段（如论文精读的 analyze_paper）页面看起来静止。
+                // 仅在尚无具体状态时设一个通用的「正在思考...」。
                 setMessages(prev => prev.map(msg =>
                   msg.id === assistantMessageId
-                    ? { ...msg, content: currentContent, workflowStatus: undefined }
+                    ? { ...msg, content: currentContent, workflowStatus: msg.workflowStatus || '正在思考...' }
                     : msg
                 ))
                 break
@@ -430,9 +504,34 @@ export default function ChatView({ sessionId: initialSessionId }: ChatViewProps)
                 }
                 break
 
+              case 'retrieval_approval_request':
+                // 检索条件待确认：记录 task_id 与条件，等待用户接受/拒绝，
+                // 此时不应启动工作流 SSE（工作流尚未真正运行）
+                taskId = data.data?.task_id
+                setStatus('completed')
+                setMessages(prev => prev.map(msg =>
+                  msg.id === assistantMessageId
+                    ? {
+                        ...msg,
+                        workflowStatus: undefined,
+                        approval: {
+                          taskId: data.data?.task_id,
+                          conditions: data.data?.conditions || {},
+                          status: 'pending',
+                        },
+                      }
+                    : msg
+                ))
+                break
+
               case 'response_done':
                 if (taskId) {
-                  startWorkflowSSE(taskId, assistantMessageId)
+                  // 仅当不存在待确认的审批时才订阅工作流状态；
+                  // 审批流里 response_done 紧跟 retrieval_approval_request，此时不应启动 SSE
+                  const hasApproval = messagesRef.current.find(m => m.id === assistantMessageId)?.approval
+                  if (!hasApproval) {
+                    startWorkflowSSE(taskId, assistantMessageId)
+                  }
                 } else {
                   setStatus('completed')
                   setMessages(prev => prev.map(msg =>
@@ -464,6 +563,85 @@ export default function ChatView({ sessionId: initialSessionId }: ChatViewProps)
         msg.id === assistantMessageId
           ? { ...msg, content: `抱歉，请求过程中出现错误：${error instanceof Error ? error.message : '未知错误'}`, workflowStatus: undefined }
           : msg
+      ))
+    }
+  }
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    sendMessage(input)
+  }
+
+  // 接受检索条件：后台启动完整工作流，订阅工作流状态
+  const handleApproveRetrieval = async (assistantMessageId: string, taskId: string) => {
+    setMessages(prev => prev.map(m =>
+      m.id === assistantMessageId && m.approval
+        ? { ...m, approval: { ...m.approval, status: 'submitting', error: undefined } }
+        : m
+    ))
+    try {
+      const res = await fetch('/api/workflow/approve-retrieval', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task_id: taskId, decision: 'approve', session_id: sessionId || undefined }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (res.ok && data.status === 'running') {
+        setMessages(prev => prev.map(m =>
+          m.id === assistantMessageId && m.approval
+            ? { ...m, approval: { ...m.approval!, status: 'approved' }, workflowStatus: '已确认检索条件，开始检索论文...' }
+            : m
+        ))
+        setStatus('running')
+        startWorkflowSSE(taskId, assistantMessageId)
+      } else {
+        setMessages(prev => prev.map(m =>
+          m.id === assistantMessageId && m.approval
+            ? { ...m, approval: { ...m.approval!, status: 'pending', error: data.detail || '启动失败' } }
+            : m
+        ))
+      }
+    } catch (e) {
+      setMessages(prev => prev.map(m =>
+        m.id === assistantMessageId && m.approval
+          ? { ...m, approval: { ...m.approval!, status: 'pending', error: '网络错误' } }
+          : m
+      ))
+    }
+  }
+
+  // 拒绝检索条件并提交修改建议：后端据此重新生成条件，刷新审批卡片
+  const handleRejectRetrieval = async (assistantMessageId: string, taskId: string, modification: string) => {
+    setMessages(prev => prev.map(m =>
+      m.id === assistantMessageId && m.approval
+        ? { ...m, approval: { ...m.approval, status: 'submitting', error: undefined } }
+        : m
+    ))
+    try {
+      const res = await fetch('/api/workflow/approve-retrieval', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task_id: taskId, decision: 'reject', modification, session_id: sessionId || undefined }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (res.ok && data.status === 'awaiting_approval' && data.conditions) {
+        setMessages(prev => prev.map(m =>
+          m.id === assistantMessageId && m.approval
+            ? { ...m, approval: { taskId, conditions: data.conditions, status: 'pending' } }
+            : m
+        ))
+      } else {
+        setMessages(prev => prev.map(m =>
+          m.id === assistantMessageId && m.approval
+            ? { ...m, approval: { ...m.approval!, status: 'pending', error: data.detail || '重新生成失败' } }
+            : m
+        ))
+      }
+    } catch (e) {
+      setMessages(prev => prev.map(m =>
+        m.id === assistantMessageId && m.approval
+          ? { ...m, approval: { ...m.approval!, status: 'pending', error: '网络错误' } }
+          : m
       ))
     }
   }
@@ -507,12 +685,16 @@ export default function ChatView({ sessionId: initialSessionId }: ChatViewProps)
       // 如果没有 sessionId，创建新会话（只显示欢迎消息）
       if (!initialSessionId) {
         setSessionId(null)
-        setMessages([{
-          id: 'welcome',
-          role: 'system',
-          content: '欢迎使用 Scira 科研助手！请输入您感兴趣的研究主题，我将为您检索相关论文并生成综述报告。您也可以询问之前研究过的主题，或进行简单的对话。',
-          timestamp: new Date()
-        }])
+        // 若有 pendingMessage（从知识库「阅读该论文」跳转来），自动发送 effect 已在挂载时
+        // 触发 sendMessage 并写入用户消息，这里不能再覆写 messages，否则会把待发送消息冲掉
+        if (!pendingMessage) {
+          setMessages([{
+            id: 'welcome',
+            role: 'system',
+            content: '欢迎使用 Scira 科研助手！请输入您感兴趣的研究主题，我将为您检索相关论文并生成综述报告。您也可以询问之前研究过的主题，或进行简单的对话。',
+            timestamp: new Date()
+          }])
+        }
         return
       }
 
@@ -549,6 +731,18 @@ export default function ChatView({ sessionId: initialSessionId }: ChatViewProps)
 
     initSession()
   }, [])
+
+  // 从知识库「阅读该论文」跳转过来时，自动发送预填消息
+  // 用 ref 去重，避免 React.StrictMode 在开发模式下双触发 effect 导致重复发送
+  const pendingFiredRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!pendingMessage) return
+    if (pendingFiredRef.current === pendingMessage) return
+    pendingFiredRef.current = pendingMessage
+    onPendingConsumed?.()
+    sendMessage(pendingMessage)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingMessage])
 
   return (
     <div className="h-full flex flex-col">
@@ -661,23 +855,61 @@ export default function ChatView({ sessionId: initialSessionId }: ChatViewProps)
             </div>
 
             {/* 消息内容 */}
-            <div className={`max-w-[70%] ${message.role === 'user' ? 'text-right' : ''}`}>
-              <div className={`rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap
+            <div className={`max-w-[70%] ${message.approval ? 'md:max-w-[85%] max-w-[90%]' : ''}`}>
+              <div className={`rounded-2xl px-4 py-3 text-sm leading-relaxed
                 ${message.role === 'system'
-                  ? 'bg-dark-surface border border-dark-border text-dark-text/80'
+                  ? 'bg-dark-surface border border-dark-border text-dark-text/80 whitespace-pre-wrap'
                   : message.role === 'user'
-                    ? 'bg-primary-500 text-white'
+                    ? 'bg-primary-500 text-white whitespace-pre-wrap'
                     : 'bg-dark-surface border border-dark-border text-dark-text'
                 }`}>
-                {message.content}
+                {message.role === 'assistant' ? (
+                  <div className="prose-chat">
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm, remarkMath]}
+                      rehypePlugins={[rehypeKatex]}
+                      components={{
+                        h1: ({ children }) => <h1 className="text-lg font-bold text-dark-text border-b border-dark-border pb-2 mb-3 mt-2">{children}</h1>,
+                        h2: ({ children }) => <h2 className="text-base font-bold text-primary-400 mt-4 mb-2">{children}</h2>,
+                        h3: ({ children }) => <h3 className="text-sm font-semibold text-dark-text mt-3 mb-1.5">{children}</h3>,
+                        p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+                        ul: ({ children }) => <ul className="list-disc list-inside space-y-1 mb-2">{children}</ul>,
+                        ol: ({ children }) => <ol className="list-decimal list-inside space-y-1 mb-2">{children}</ol>,
+                        li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+                        strong: ({ children }) => <strong className="font-semibold text-dark-text">{children}</strong>,
+                        em: ({ children }) => <em className="italic">{children}</em>,
+                        code: ({ children }) => <code className="bg-dark-border/50 px-1 py-0.5 rounded text-xs">{children}</code>,
+                        pre: ({ children }) => <pre className="bg-dark-border/30 p-2 rounded text-xs overflow-x-auto mb-2">{children}</pre>,
+                        blockquote: ({ children }) => <blockquote className="border-l-2 border-primary-400 pl-3 text-dark-muted mb-2">{children}</blockquote>,
+                        table: ({ children }) => <table className="border-collapse mb-2 text-xs">{children}</table>,
+                        th: ({ children }) => <th className="border border-dark-border px-2 py-1 bg-dark-border/30">{children}</th>,
+                        td: ({ children }) => <td className="border border-dark-border px-2 py-1">{children}</td>,
+                      }}
+                    >
+                      {message.content}
+                    </ReactMarkdown>
+                  </div>
+                ) : (
+                  <span className="whitespace-pre-wrap">{message.content}</span>
+                )}
               </div>
+
+              {/* 检索条件审批卡片 */}
+              {message.role === 'assistant' && message.approval && (
+                <ApprovalCard
+                  approval={message.approval}
+                  onApprove={() => handleApproveRetrieval(message.id, message.approval!.taskId)}
+                  onReject={(mod) => handleRejectRetrieval(message.id, message.approval!.taskId, mod)}
+                />
+              )}
+
               {message.role === 'assistant' && message.workflowStatus && (
                 <div className="flex items-center gap-1.5 mt-1 text-xs text-dark-muted">
                   <Loader2 className="w-3 h-3 animate-spin" />
                   {message.workflowStatus}
                 </div>
               )}
-              <div className={`text-xs text-dark-muted mt-1 ${message.role === 'user' ? 'text-right' : ''}`}>
+              <div className="text-xs text-dark-muted mt-1">
                 {message.timestamp.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
               </div>
             </div>
@@ -744,6 +976,123 @@ export default function ChatView({ sessionId: initialSessionId }: ChatViewProps)
           ))}
         </div>
       </div>
+    </div>
+  )
+}
+
+
+// 检索条件审批卡片：展示规范化主题/关键词/布尔查询/时间范围等，提供 接受 / 拒绝+修改建议 两个入口
+function ApprovalCard({
+  approval,
+  onApprove,
+  onReject,
+}: {
+  approval: Approval
+  onApprove: () => void
+  onReject: (modification: string) => void
+}) {
+  const [showReject, setShowReject] = useState(false)
+  const [mod, setMod] = useState('')
+  const c = approval.conditions || {}
+  const submitting = approval.status === 'submitting'
+  const approved = approval.status === 'approved'
+
+  return (
+    <div className="mt-2 rounded-xl border border-primary-500/30 bg-primary-500/5 p-3 text-left">
+      <div className="flex items-center gap-2 text-primary-400 text-xs font-medium mb-2">
+        <Sparkles className="w-3.5 h-3.5" />
+        请确认检索条件
+      </div>
+
+      <div className="space-y-1.5 text-xs text-dark-text/90">
+        {c.normalized_topic && (
+          <div><span className="text-dark-muted">规范化主题：</span>{c.normalized_topic}</div>
+        )}
+        {(c.key_concepts || []).length > 0 && (
+          <div><span className="text-dark-muted">关键概念：</span>{(c.key_concepts || []).join('、')}</div>
+        )}
+        {c.boolean_query && (
+          <div className="flex gap-1"><span className="text-dark-muted shrink-0">布尔查询：</span><code className="bg-dark-bg px-1.5 py-0.5 rounded text-primary-300 break-all">{c.boolean_query}</code></div>
+        )}
+        {(c.keywords || []).length > 0 && (
+          <div><span className="text-dark-muted">关键词：</span>{(c.keywords || []).join('、')}</div>
+        )}
+        {(c.categories || []).length > 0 && (
+          <div><span className="text-dark-muted">分类：</span>{(c.categories || []).join('、')}</div>
+        )}
+        {c.date_range && c.date_range.length === 2 && (c.date_range[0] || c.date_range[1]) && (
+          <div><span className="text-dark-muted">时间范围：</span>{c.date_range[0] || '…'} ~ {c.date_range[1] || '…'}</div>
+        )}
+        {c.max_results != null && (
+          <div><span className="text-dark-muted">最大结果数：</span>{c.max_results}</div>
+        )}
+        {c.rationale && (
+          <div className="text-dark-muted"><span>理由：</span>{c.rationale}</div>
+        )}
+      </div>
+
+      {approval.error && (
+        <div className="mt-2 text-xs text-red-400">{approval.error}</div>
+      )}
+
+      {!approved && (
+        <div className="mt-3 space-y-2">
+          {!showReject ? (
+            <div className="flex gap-2">
+              <button
+                onClick={onApprove}
+                disabled={submitting}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-primary-500 hover:bg-primary-600 disabled:opacity-50 text-white rounded-lg text-xs transition-colors"
+              >
+                {submitting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                接受并检索
+              </button>
+              <button
+                onClick={() => setShowReject(true)}
+                disabled={submitting}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-dark-bg hover:bg-dark-border disabled:opacity-50 text-dark-text rounded-lg text-xs border border-dark-border transition-colors"
+              >
+                <X className="w-3.5 h-3.5" />
+                拒绝并修改
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <textarea
+                value={mod}
+                onChange={(e) => setMod(e.target.value)}
+                placeholder="请输入修改建议，例如：增加近5年的论文、补充XXX方向的关键词…"
+                className="w-full bg-dark-bg border border-dark-border rounded-lg px-2.5 py-1.5 text-xs text-dark-text resize-none focus:outline-none focus:border-primary-500 placeholder:text-dark-muted"
+                rows={2}
+              />
+              <div className="flex gap-2">
+                <button
+                  onClick={() => { onReject(mod); setMod(''); setShowReject(false) }}
+                  disabled={submitting || !mod.trim()}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-primary-500 hover:bg-primary-600 disabled:opacity-50 text-white rounded-lg text-xs transition-colors"
+                >
+                  {submitting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                  提交修改并重新生成
+                </button>
+                <button
+                  onClick={() => setShowReject(false)}
+                  disabled={submitting}
+                  className="px-3 py-1.5 bg-dark-bg hover:bg-dark-border text-dark-muted rounded-lg text-xs border border-dark-border transition-colors"
+                >
+                  取消
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {approved && (
+        <div className="mt-3 flex items-center gap-1.5 text-xs text-green-400">
+          <Check className="w-3.5 h-3.5" />
+          已确认检索条件，正在检索…
+        </div>
+      )}
     </div>
   )
 }

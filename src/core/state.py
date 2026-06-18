@@ -69,6 +69,8 @@ class GraphState(TypedDict):
     user_query: str  # Original user research query
     research_topic: str  # Normalized/expanded research topic
     auto_approve: bool  # Whether to skip human approvals
+    # 工作流执行模式：full(完整) / search_only(仅检索) / search_download(检索+下载)
+    workflow_mode: str
 
     # ===================
     # Trend Analysis Stage

@@ -8,7 +8,9 @@ Implements parallel paper reading and information extraction:
 """
 
 import os
+import re
 import json
+import shutil
 from typing import Dict, List, Optional, Any, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -21,6 +23,106 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from config.settings import get_config, SciraConfig
 from src.tools.pdf_parser import PDFParser, ParserBackend, ParsedPaper
 from src.agents.prompts import READING_SYSTEM, READING_EXTRACT_PROMPT
+
+
+def sanitize_paper_id_for_filename(paper_id: str) -> str:
+    """
+    把 paper_id 规范化为安全的文件名片段。
+
+    DOI 形如 ``10.64898/2026.05.18.725649`` 含 ``/``，直接拼路径会变成嵌套目录
+    ``pdfs/10.64898/2026.05.18.725649.pdf``。这里统一把路径分隔符等不安全字符
+    替换为 ``_``，保证 PDF 都落在扁平的 ``pdfs/`` 目录下。
+
+    Args:
+        paper_id: 原始论文 ID（可能是 arxiv id、DOI 等）
+
+    Returns:
+        可直接用于文件名的安全字符串
+    """
+    if not paper_id:
+        return "unknown"
+    # 替换路径分隔符及其他对文件系统不友好的字符
+    safe = re.sub(r"[\\/:*?\"<>|]", "_", str(paper_id).strip())
+    return safe or "unknown"
+
+
+def _resolve_downloaded_pdf(
+    expected_path: str,
+    returned_path: str,
+    target_dir: str,
+    paper_id: str,
+) -> Optional[str]:
+    """
+    把下载到的 PDF 统一归位到 ``target_dir/<safe_paper_id>.pdf``。
+
+    下载器（Sci-Hub / Unpaywall / OA 仓储）通常用哈希或来源 URL 命名文件，
+    实际落盘名既不是 ``<paper_id>.pdf`` 也不一定与 ``returned_path`` 一致。
+    本函数按以下顺序定位并归位：
+
+    1. 期望路径已存在 → 直接用；
+    2. returned_path 存在 → 移动到期望路径；
+    3. 在 target_dir 下扫描 *.pdf，取最近写入的一个移动到期望路径
+       （覆盖下载器未回传 save_path、或用任意哈希命名的场景）；
+    4. 都找不到 → 返回 None。
+
+    Args:
+        expected_path: 规范化后的目标路径 ``target_dir/<safe_paper_id>.pdf``
+        returned_path: /download 响应里回传的 save_path（可能为空或不准）
+        target_dir: 下载目录
+        paper_id: 原始论文 ID，仅用于日志
+
+    Returns:
+        归位后的绝对路径，或 None
+    """
+    from src.utils.logger import logger
+
+    # 1. 期望路径已存在
+    if expected_path and os.path.exists(expected_path):
+        return expected_path
+
+    # 2. returned_path 存在 → 归位
+    if returned_path and os.path.exists(returned_path) and returned_path != expected_path:
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+            # 若目标已存在（同名旧文件），先删除再移动，避免 shutil.move 进子目录
+            if os.path.exists(expected_path):
+                os.remove(expected_path)
+            shutil.move(returned_path, expected_path)
+            logger.info(f"Moved PDF to canonical location: {expected_path}")
+            return expected_path
+        except Exception as e:
+            logger.warning(f"Failed to move {returned_path} -> {expected_path}: {e}")
+            # 移动失败则直接用原路径（前提是它确实存在）
+            return returned_path
+
+    # 3. 扫描 target_dir 下的 PDF，取最近修改的一个归位
+    try:
+        pdf_files = [
+            os.path.join(target_dir, f)
+            for f in os.listdir(target_dir)
+            if f.lower().endswith(".pdf") and os.path.isfile(os.path.join(target_dir, f))
+        ]
+    except Exception:
+        pdf_files = []
+
+    if pdf_files:
+        # 取最近写入的 PDF（下载刚完成，mtime 最新）
+        latest = max(pdf_files, key=lambda p: os.path.getmtime(p))
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+            if os.path.exists(expected_path) and os.path.abspath(latest) != os.path.abspath(expected_path):
+                os.remove(expected_path)
+            if os.path.abspath(latest) != os.path.abspath(expected_path):
+                shutil.move(latest, expected_path)
+            logger.info(f"Renamed downloaded PDF {os.path.basename(latest)} -> {expected_path} (paper_id={paper_id})")
+            return expected_path
+        except Exception as e:
+            logger.warning(f"Failed to rename {latest} -> {expected_path}: {e}")
+            return latest
+
+    # 4. 找不到任何 PDF
+    logger.warning(f"PDF not found for {paper_id}: expected={expected_path}, returned={returned_path}, dir={target_dir}")
+    return None
 
 
 @dataclass
@@ -120,45 +222,47 @@ class ReaderAgent:
         target_dir = download_dir or os.getenv("PAPER_DOWNLOAD_DIR", "./data/downloads")
         os.makedirs(target_dir, exist_ok=True)
 
-        # 从 paper_id 提取实际的 ID
-        paper_id = task.paper_id
+        paper_id = task.paper_id or ""
+        # DOI 形式的 ID（如 10.64898/...）也走 /download：其回退链（仓储/Unpaywall/Sci-Hub）
+        # 可按 DOI 解析到 PDF；不要仅凭前缀短路成 read-only。
+        is_doi = paper_id.startswith("10.")
+        doi = paper_id if is_doi else ""
 
-        # DOI 格式的论文无法直接下载PDF，尝试使用 read API
-        if paper_id.startswith("10."):
+        def _try_read_api() -> bool:
+            """用 /read 获取正文作为内容兜底。该端点接收 query 参数而非 JSON body。"""
             try:
-                response = requests.post(
+                read_response = requests.post(
                     f"{mcp_api_base}/read",
-                    json={"source": "arxiv", "paper_id": paper_id},
-                    timeout=30
+                    params={"source": "arxiv", "paper_id": paper_id},
+                    timeout=30,
                 )
-                if response.status_code == 200:
-                    result = response.json()
-                    if result.get("content"):
+                if read_response.status_code == 200:
+                    read_result = read_response.json()
+                    if read_result.get("content"):
                         task.parsed_content = {
                             "paper_id": task.paper_id,
                             "title": task.title,
                             "authors": task.authors,
                             "abstract": task.abstract,
-                            "extracted_content": result.get("content", "")[:5000],
-                            "word_count": len(result.get("content", "")),
+                            "extracted_content": read_result.get("content", "")[:5000],
+                            "word_count": len(read_result.get("content", "")),
                         }
                         task.status = "completed"
-                        logger.info(f"Read paper content via API: {paper_id}")
-                        return task
+                        logger.info(f"Read paper via API fallback: {paper_id}")
+                        return True
             except Exception as e:
-                logger.debug(f"Read API failed for DOI paper: {e}")
-
-            task.status = "skipped"
-            task.error = "DOI format - no PDF available"
-            return task
+                logger.debug(f"Read API failed for {paper_id}: {e}")
+            return False
 
         try:
-            # 调用MCP API下载论文
+            # 调用 MCP /download 下载论文（源站 → OA 仓储 → Unpaywall → Sci-Hub 多级回退）
             response = requests.post(
                 f"{mcp_api_base}/download",
                 json={
                     "source": "arxiv",
                     "paper_id": paper_id,
+                    "doi": doi or None,
+                    "title": task.title or None,
                     "save_path": target_dir,
                     "use_scihub": True,
                 },
@@ -169,63 +273,42 @@ class ReaderAgent:
                 result = response.json()
                 if result.get("success"):
                     returned_path = result.get("save_path", "")
-                    # 检查文件是否在正确的位置
-                    expected_path = os.path.join(target_dir, f"{paper_id}.pdf")
+                    # 规范化文件名：DOI 形如 10.64898/2026.05.18.725649 含 '/'，
+                    # 直接拼会变成嵌套目录，统一替换为 '_'，保证落到扁平 pdfs/ 目录
+                    safe_paper_id = sanitize_paper_id_for_filename(paper_id)
+                    expected_path = os.path.join(target_dir, f"{safe_paper_id}.pdf")
 
-                    if os.path.exists(expected_path):
-                        # 文件已在正确位置
-                        task.pdf_path = expected_path
-                    elif os.path.exists(returned_path):
-                        # 文件在其他位置，尝试移动到正确位置
-                        os.makedirs(target_dir, exist_ok=True)
-                        try:
-                            import shutil
-                            shutil.move(returned_path, expected_path)
-                            task.pdf_path = expected_path
-                            logger.info(f"Moved PDF to correct location: {expected_path}")
-                        except Exception as e:
-                            # 移动失败，使用原路径
-                            task.pdf_path = returned_path
-                            logger.warning(f"Failed to move PDF: {e}")
-                    else:
-                        # 文件不存在，使用期望路径
-                        task.pdf_path = expected_path
-                        logger.warning(f"PDF not found at {returned_path} or {expected_path}")
-
-                    task.status = "downloaded"
-                    logger.info(f"Downloaded paper: {paper_id}")
-                else:
-                    task.status = "failed"
-                    task.error = result.get("detail", "Download failed")
-            else:
-                # HTTP 错误，尝试 read API
-                try:
-                    read_response = requests.post(
-                        f"{mcp_api_base}/read",
-                        json={"source": "arxiv", "paper_id": paper_id},
-                        timeout=30
+                    resolved_path = _resolve_downloaded_pdf(
+                        expected_path, returned_path, target_dir, paper_id
                     )
-                    if read_response.status_code == 200:
-                        read_result = read_response.json()
-                        if read_result.get("content"):
-                            task.parsed_content = {
-                                "paper_id": task.paper_id,
-                                "title": task.title,
-                                "authors": task.authors,
-                                "abstract": task.abstract,
-                                "extracted_content": read_result.get("content", "")[:5000],
-                                "word_count": len(read_result.get("content", "")),
-                            }
-                            task.status = "completed"
-                            logger.info(f"Read paper via API fallback: {paper_id}")
+                    if resolved_path:
+                        task.pdf_path = resolved_path
+                        task.status = "downloaded"
+                        logger.info(f"Downloaded paper: {paper_id} -> {resolved_path}")
+                    else:
+                        # 下载返回 success 但找不到实际文件：尝试 /read 兜底
+                        if _try_read_api():
                             return task
-                except:
-                    pass
+                        task.status = "failed"
+                        task.error = "PDF not found after download"
+                else:
+                    # 下载回退链全部失败：尝试 /read 获取正文兜底
+                    if _try_read_api():
+                        return task
+                    task.status = "failed"
+                    task.error = result.get("error") or result.get("detail") or "Download failed"
+            else:
+                # HTTP 错误，尝试 read API 兜底
+                if _try_read_api():
+                    return task
 
                 task.status = "failed"
                 task.error = f"HTTP {response.status_code}"
 
         except requests.exceptions.RequestException as e:
+            # 网络层失败也尝试 read API 兜底
+            if _try_read_api():
+                return task
             task.status = "failed"
             task.error = f"Download failed: {e}"
 
@@ -251,11 +334,12 @@ class ReaderAgent:
             return task
 
         if not os.path.exists(task.pdf_path):
-            # 尝试多个可能的路径
+            # 尝试多个可能的路径（统一用规范化文件名，DOI 中的 '/' 已替换为 '_'）
+            safe_id = sanitize_paper_id_for_filename(task.paper_id)
             possible_paths = [
                 task.pdf_path,
-                os.path.join("./data/downloads", f"{task.paper_id}.pdf"),
-                os.path.join("./data/papers", f"{task.paper_id}.pdf"),
+                os.path.join("./data/downloads", f"{safe_id}.pdf"),
+                os.path.join("./data/papers", f"{safe_id}.pdf"),
             ]
 
             found_path = None

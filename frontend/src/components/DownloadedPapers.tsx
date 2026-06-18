@@ -8,7 +8,7 @@ interface DownloadedPaper {
   authors: string[]
   publishedDate: string
   pdfUrl: string
-  topics: string[]
+  keywords: string[]
 }
 
 export default function DownloadedPapers() {
@@ -30,7 +30,7 @@ export default function DownloadedPapers() {
             authors: p.authors || [],
             publishedDate: p.published_date || p.published || '',
             pdfUrl: p.pdf_url || '',
-            topics: p.topics || []
+            keywords: p.keywords || []
           })) || []
           setPapers(downloadedPapers)
         }
@@ -48,7 +48,7 @@ export default function DownloadedPapers() {
   const filteredPapers = papers.filter(paper =>
     paper.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
     paper.authors.some(a => a.toLowerCase().includes(searchQuery.toLowerCase())) ||
-    paper.topics.some(t => t.toLowerCase().includes(searchQuery.toLowerCase()))
+    paper.keywords.some(t => t.toLowerCase().includes(searchQuery.toLowerCase()))
   )
 
   const handlePreview = (paper: DownloadedPaper) => {
@@ -136,9 +136,9 @@ export default function DownloadedPapers() {
               >
                 {/* 标签 */}
                 <div className="flex flex-wrap gap-1 mb-2">
-                  {paper.topics?.slice(0, 2).map((topic, i) => (
+                  {paper.keywords?.slice(0, 2).map((kw, i) => (
                     <span key={i} className="text-xs px-2 py-0.5 bg-primary-500/20 text-primary-400 rounded-full">
-                      {topic}
+                      {kw}
                     </span>
                   ))}
                 </div>
@@ -242,13 +242,13 @@ export default function DownloadedPapers() {
                 </div>
 
                 {/* 标签 */}
-                {selectedPaper.topics && selectedPaper.topics.length > 0 && (
+                {selectedPaper.keywords && selectedPaper.keywords.length > 0 && (
                   <div className="flex items-start gap-2">
-                    <span className="text-dark-muted text-sm">主题：</span>
+                    <span className="text-dark-muted text-sm">关键词：</span>
                     <div className="flex flex-wrap gap-1">
-                      {selectedPaper.topics.map((topic, i) => (
+                      {selectedPaper.keywords.map((kw, i) => (
                         <span key={i} className="px-2 py-0.5 bg-primary-500/20 text-primary-400 rounded-full text-xs">
-                          {topic}
+                          {kw}
                         </span>
                       ))}
                     </div>

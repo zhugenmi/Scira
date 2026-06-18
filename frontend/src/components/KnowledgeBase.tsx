@@ -4,8 +4,22 @@ import {
   BookOpen, Search, ChevronRight, FileText, Calendar, User, Users,
   Tag, X, ExternalLink, File, PanelLeftClose, PanelLeft, Maximize2,
   Minimize2, ArrowLeft, FolderOpen, FolderClosed, Copy, Check,
-  Trash2, Plus, Upload, Type
+  Trash2, Plus, Upload, Type, Download, Sparkles, Microscope, Globe, BookOpenCheck, ChevronDown
 } from 'lucide-react'
+
+// 把后端返回的相对路径（如 data/papers/具体表征/pdfs/xxx.pdf）转成可访问的 URL。
+// 路径里可能含中文/空格等字符，直接放进 iframe src 会导致请求失败
+// （Failed to load PDF document）。这里对每一段单独 encodeURIComponent，
+// 保留 '/' 作为路径分隔符。
+function toPdfUrl(pdfPath: string): string {
+  if (!pdfPath) return ''
+  const normalized = pdfPath.replace(/^data\//, '/data/')
+  const isAbsolute = normalized.startsWith('/data/')
+  const root = isAbsolute ? '/data/' : ''
+  const rest = isAbsolute ? normalized.slice('/data/'.length) : normalized
+  const encoded = rest.split('/').map(encodeURIComponent).join('/')
+  return root + encoded
+}
 
 interface Paper {
   paper_id: string
@@ -14,7 +28,7 @@ interface Paper {
   abstract: string
   published_date: string
   pdf_url: string
-  topics: string[]
+  keywords: string[]
   citations?: number
   pdf_path?: string
   journal?: string
@@ -31,7 +45,11 @@ interface TopicGroup {
   papers: Paper[]
 }
 
-export default function KnowledgeBase() {
+interface KnowledgeBaseProps {
+  onReadPaper?: (paperTitle: string, mode: 'snap' | 'lens' | 'sphere') => void
+}
+
+export default function KnowledgeBase({ onReadPaper }: KnowledgeBaseProps) {
   const [topics, setTopics] = useState<TopicGroup[]>([])
   const [selectedTopic, setSelectedTopic] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -50,6 +68,12 @@ export default function KnowledgeBase() {
   const [citationText, setCitationText] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  // 获取论文 / 阅读论文 下拉与状态
+  const [fetchMenuOpen, setFetchMenuOpen] = useState(false)
+  const [readMenuOpen, setReadMenuOpen] = useState(false)
+  const [fetching, setFetching] = useState(false)
+  const [fetchMessage, setFetchMessage] = useState<{ ok: boolean; text: string } | null>(null)
+  const uploadPdfRef = useRef<HTMLInputElement>(null)
 
   // 加载知识库数据
   const loadKnowledgeBase = useCallback(async () => {
@@ -86,6 +110,16 @@ export default function KnowledgeBase() {
       if (topicGroups.length > 0 && !selectedTopic) {
         setSelectedTopic(topicGroups[0].name)
       }
+      // 刷新后用「函数式更新」同步当前选中论文的最新字段（如 pdf_path），
+      // 仅当 paper_id 仍匹配当前选中项时才替换，避免覆盖用户在此期间切换到的别的论文
+      setSelectedPaper(prev => {
+        if (!prev) return prev
+        for (const t of topicGroups) {
+          const p = t.papers.find(pp => pp.paper_id === prev.paper_id)
+          if (p) return p
+        }
+        return prev
+      })
     } catch (error) {
       console.error('加载知识库失败:', error)
     }
@@ -334,6 +368,61 @@ export default function KnowledgeBase() {
     setSubmitting(false)
   }
 
+  // 在线获取论文 PDF：调用 MCP 检索 + 多级回退下载，挂到当前条目
+  const handleFetchOnline = async () => {
+    if (!selectedTopic || !selectedPaper) return
+    setFetchMenuOpen(false)
+    setFetching(true)
+    setFetchMessage(null)
+    try {
+      const res = await fetch(`/api/papers/${selectedTopic}/${selectedPaper.paper_id}/fetch-online`, { method: 'POST' })
+      const data = await res.json().catch(() => ({}))
+      if (res.ok && data.success) {
+        setFetchMessage({ ok: true, text: data.message || '已获取并关联 PDF' })
+        // 刷新后由 loadKnowledgeBase 内部按 paper_id 同步选中论文的最新 pdf_path
+        await loadKnowledgeBase()
+      } else {
+        setFetchMessage({ ok: false, text: data.message || data.detail || '获取失败' })
+      }
+    } catch (e) {
+      setFetchMessage({ ok: false, text: '获取失败，请稍后重试' })
+    }
+    setFetching(false)
+  }
+
+  // 导入本地 PDF：用户自己下载好后上传，挂到当前条目
+  const handleUploadPdfAttach = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!selectedTopic || !selectedPaper || !e.target.files?.length) return
+    setFetchMenuOpen(false)
+    setFetching(true)
+    setFetchMessage(null)
+    try {
+      const formData = new FormData()
+      formData.append('file', e.target.files[0])
+      const res = await fetch(`/api/papers/${selectedTopic}/${selectedPaper.paper_id}/upload-pdf`, {
+        method: 'POST',
+        body: formData,
+      })
+      const data = await res.json().catch(() => ({}))
+      if (res.ok && data.success) {
+        setFetchMessage({ ok: true, text: data.message || 'PDF 已上传并关联' })
+        await loadKnowledgeBase()
+      } else {
+        setFetchMessage({ ok: false, text: data.detail || '上传失败' })
+      }
+    } catch {
+      setFetchMessage({ ok: false, text: '上传失败' })
+    }
+    setFetching(false)
+    if (uploadPdfRef.current) uploadPdfRef.current.value = ''
+  }
+
+  const handleReadPaper = (mode: 'snap' | 'lens' | 'sphere') => {
+    if (!selectedPaper) return
+    setReadMenuOpen(false)
+    onReadPaper?.(selectedPaper.title, mode)
+  }
+
   // ========== 渲染 ==========
 
   if (pdfFullscreen && selectedPaper?.pdf_path) {
@@ -354,7 +443,7 @@ export default function KnowledgeBase() {
             )}
           </div>
         </div>
-        <iframe src={selectedPaper.pdf_path.replace('data/', '/data/')} className="w-full h-full" title="PDF Preview" />
+        <iframe src={toPdfUrl(selectedPaper.pdf_path)} className="w-full h-full" title="PDF Preview" />
       </div>
     )
   }
@@ -573,6 +662,70 @@ export default function KnowledgeBase() {
                     <Maximize2 className="w-4 h-4" />
                   </button>
                 )}
+
+                {/* 无 PDF 时：获取论文下拉（在线搜索 / 导入） */}
+                {!selectedPaper.pdf_path && (
+                  <div className="relative">
+                    <button
+                      onClick={() => { setFetchMenuOpen(v => !v); setReadMenuOpen(false) }}
+                      disabled={fetching}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-primary-500/10 border border-primary-500/30 rounded-lg text-xs text-primary-400 hover:bg-primary-500/20 hover:border-primary-500/50 transition-colors disabled:opacity-50"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      {fetching ? '获取中...' : '获取论文'}
+                      <ChevronDown className="w-3 h-3" />
+                    </button>
+                    <input ref={uploadPdfRef} type="file" accept=".pdf" onChange={handleUploadPdfAttach} className="hidden" />
+                    {fetchMenuOpen && (
+                      <div className="absolute right-0 top-full mt-1 w-40 bg-dark-surface border border-dark-border rounded-lg shadow-lg z-20 overflow-hidden">
+                        <button onClick={handleFetchOnline} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-dark-text hover:bg-dark-border/30 transition-colors">
+                          <Search className="w-3.5 h-3.5 text-primary-400" />在线搜索
+                        </button>
+                        <button onClick={() => { setFetchMenuOpen(false); uploadPdfRef.current?.click() }} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-dark-text hover:bg-dark-border/30 transition-colors">
+                          <Upload className="w-3.5 h-3.5 text-primary-400" />导入
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* 阅读该论文：三种精读模式，跳转到新会话 */}
+                {selectedPaper.pdf_path && (
+                  <div className="relative">
+                    <button
+                      onClick={() => { setReadMenuOpen(v => !v); setFetchMenuOpen(false) }}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-primary-500/10 border border-primary-500/30 rounded-lg text-xs text-primary-400 hover:bg-primary-500/20 hover:border-primary-500/50 transition-colors"
+                    >
+                      <BookOpenCheck className="w-3.5 h-3.5" />AI读论文
+                      <ChevronDown className="w-3 h-3" />
+                    </button>
+                    {readMenuOpen && (
+                      <div className="absolute right-0 top-full mt-1 w-48 bg-dark-surface border border-dark-border rounded-lg shadow-lg z-20 overflow-hidden">
+                        {([
+                          { mode: 'snap' as const, icon: Sparkles, label: '速览模式', desc: '30秒核心贡献' },
+                          { mode: 'lens' as const, icon: Microscope, label: '深度精读', desc: '公式/算法/实验' },
+                          { mode: 'sphere' as const, icon: Globe, label: '研究全景', desc: '参考文献与聚类' },
+                        ]).map(opt => {
+                          const Icon = opt.icon
+                          return (
+                            <button
+                              key={opt.mode}
+                              onClick={() => handleReadPaper(opt.mode)}
+                              className="w-full flex items-start gap-2 px-3 py-2 text-left hover:bg-dark-border/30 transition-colors"
+                            >
+                              <Icon className="w-3.5 h-3.5 text-primary-400 mt-0.5 shrink-0" />
+                              <div className="min-w-0">
+                                <div className="text-xs text-dark-text">{opt.label}</div>
+                                <div className="text-[10px] text-dark-muted">{opt.desc}</div>
+                              </div>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {selectedPaper.pdf_url && (
                   <a href={selectedPaper.pdf_url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 px-3 py-1.5 bg-dark-bg border border-dark-border rounded-lg text-xs text-dark-text hover:border-primary-500/50 transition-colors">
                     <ExternalLink className="w-3.5 h-3.5" />原文
@@ -584,6 +737,13 @@ export default function KnowledgeBase() {
                 </button>
               </div>
             </div>
+
+            {/* 获取论文反馈消息 */}
+            {fetchMessage && (
+              <div className={`px-4 py-1.5 text-xs border-b ${fetchMessage.ok ? 'bg-green-500/10 text-green-400 border-green-500/20' : 'bg-red-500/10 text-red-400 border-red-500/20'}`}>
+                {fetchMessage.text}
+              </div>
+            )}
 
             {/* 内容区域 */}
             <div className="flex-1 overflow-hidden">
@@ -610,12 +770,12 @@ export default function KnowledgeBase() {
                         </div>
                       )}
                     </div>
-                    {selectedPaper.topics && selectedPaper.topics.length > 0 && (
+                    {selectedPaper.keywords && selectedPaper.keywords.length > 0 && (
                       <div className="flex items-start gap-2 flex-wrap">
                         <Tag className="w-3.5 h-3.5 text-dark-muted mt-0.5" />
                         <div className="flex flex-wrap gap-1">
-                          {selectedPaper.topics.map((topic, i) => (
-                            <span key={i} className="px-2 py-0.5 bg-primary-500/15 text-primary-400 rounded text-xs">{topic}</span>
+                          {selectedPaper.keywords.map((kw, i) => (
+                            <span key={i} className="px-2 py-0.5 bg-primary-500/15 text-primary-400 rounded text-xs">{kw}</span>
                           ))}
                         </div>
                       </div>
@@ -663,7 +823,7 @@ export default function KnowledgeBase() {
               ) : (
                 <div className="h-full">
                   {selectedPaper.pdf_path ? (
-                    <iframe src={selectedPaper.pdf_path.replace('data/', '/data/')} className="w-full h-full" title="PDF Preview" />
+                    <iframe src={toPdfUrl(selectedPaper.pdf_path)} className="w-full h-full" title="PDF Preview" />
                   ) : (
                     <div className="h-full flex flex-col items-center justify-center text-dark-muted">
                       <File className="w-12 h-12 mb-3 opacity-30" />

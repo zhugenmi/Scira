@@ -15,6 +15,7 @@ export default function App() {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false)
   const [chatKey, setChatKey] = useState(0)  // 用于刷新 ChatView
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
+  const [pendingChatMessage, setPendingChatMessage] = useState<string | null>(null)
 
   const handleNewSession = useCallback(() => {
     setSelectedSessionId(null)
@@ -36,16 +37,26 @@ export default function App() {
     }
   }, [selectedSessionId])
 
+  // 从知识库「阅读该论文」入口跳转：新建一个会话，并预填一条消息自动发送
+  const handleReadPaper = useCallback((_title: string, mode: 'snap' | 'lens' | 'sphere') => {
+    const modeLabel = mode === 'snap' ? '速览' : mode === 'lens' ? '深度精读' : '研究全景'
+    const message = `用${modeLabel}模式阅读这篇论文《${_title}》`
+    setSelectedSessionId(null)
+    setPendingChatMessage(message)
+    setCurrentView('chat')
+    setChatKey(prev => prev + 1)
+  }, [])
+
   const renderView = () => {
     switch (currentView) {
       case 'chat':
-        return <ChatView key={chatKey} sessionId={selectedSessionId} />
+        return <ChatView key={chatKey} sessionId={selectedSessionId} pendingMessage={pendingChatMessage} onPendingConsumed={() => setPendingChatMessage(null)} />
       case 'generated':
         return <GeneratedPapers />
       case 'downloaded':
         return <DownloadedPapers />
       case 'knowledge':
-        return <KnowledgeBase />
+        return <KnowledgeBase onReadPaper={handleReadPaper} />
       case 'paper-reading':
         return <PaperReading />
       default:

@@ -13,6 +13,7 @@ from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 
 from src.agents.base import BaseAgent
+from src.agents.intent import IntentAgent, IntentType as RecognizedIntent, WorkflowMode
 from config.settings import get_config, SciraConfig
 
 
@@ -20,7 +21,9 @@ class IntentType(str, Enum):
     """用户意图类型"""
     GREETING = "greeting"           # 问候
     KNOWLEDGE_QUERY = "knowledge_query"  # 知识查询
-    NEW_RESEARCH = "new_research"   # 新研究主题
+    NEW_RESEARCH = "new_research"   # 新研究主题（兼容旧值，等价于 full_research）
+    FULL_RESEARCH = "full_research"  # 完整调研 + 生成综述
+    SEARCH = "search"               # 检索 + 下载论文（不生成综述）
     CLARIFICATION = "clarification" # 需要澄清
     HELP = "help"                   # 帮助请求
     UNKNOWN = "unknown"             # 未知
@@ -34,6 +37,7 @@ class IntentResult:
     reasoning: str
     extracted_topic: Optional[str] = None
     requires_workflow: bool = False
+    workflow_mode: str = "full"  # full / search_only / search_download / none
 
 
 class OrchestratorAgent(BaseAgent):
@@ -65,6 +69,8 @@ class OrchestratorAgent(BaseAgent):
 重要：所有回复请使用纯文本格式，不要使用 Markdown 语法（如 ##、**、*、- 等）。直接输出文本内容即可。""",
             config=config,
         )
+        # 意图识别委托给专用 IntentAgent
+        self.intent_agent = IntentAgent(config=config)
 
     def analyze_intent(
         self,
@@ -73,7 +79,7 @@ class OrchestratorAgent(BaseAgent):
         message_history: Optional[List[Dict[str, Any]]] = None,
     ) -> IntentResult:
         """
-        分析用户消息意图
+        分析用户消息意图（委托给 IntentAgent）。
 
         Args:
             user_message: 用户消息
@@ -81,71 +87,37 @@ class OrchestratorAgent(BaseAgent):
             message_history: 历史消息列表（可选，用于提供对话上下文）
 
         Returns:
-            IntentResult: 意图分析结果
+            IntentResult: 意图分析结果（含 workflow_mode）
         """
-        # 构建上下文信息
-        context_info = ""
-        if session_context:
-            topics = session_context.get("research_topics", [])
-            if topics:
-                context_info = f"\n当前会话已研究的主题：{', '.join(topics)}"
+        recognized = self.intent_agent.analyze(
+            user_message=user_message,
+            session_context=session_context,
+            message_history=message_history,
+        )
 
-        # 添加历史消息上下文
-        history_info = ""
-        if message_history and len(message_history) > 0:
-            # 只取最近5条消息
-            recent_history = message_history[-5:]
-            history_lines = []
-            for msg in recent_history:
-                role = "用户" if msg.get("role") == "user" else "助手"
-                content = msg.get("content", "")[:100]  # 限制长度
-                if content:
-                    history_lines.append(f"{role}: {content}")
-            if history_lines:
-                history_info = "\n\n对话历史（最近几条）：\n" + "\n".join(history_lines)
+        # 把 IntentAgent 的意图枚举映射回 Orchestrator 的 IntentType
+        intent_map = {
+            RecognizedIntent.GREETING: IntentType.GREETING,
+            RecognizedIntent.KNOWLEDGE_QUERY: IntentType.KNOWLEDGE_QUERY,
+            RecognizedIntent.FULL_RESEARCH: IntentType.FULL_RESEARCH,
+            RecognizedIntent.SEARCH: IntentType.SEARCH,
+            RecognizedIntent.CLARIFICATION: IntentType.CLARIFICATION,
+            RecognizedIntent.HELP: IntentType.HELP,
+            RecognizedIntent.UNKNOWN: IntentType.UNKNOWN,
+        }
+        intent = intent_map.get(recognized.intent, IntentType.UNKNOWN)
 
-        prompt = f"""分析以下用户消息的意图：
+        # 是否需要启动工作流：mode != none 即需要
+        requires_workflow = recognized.workflow_mode != WorkflowMode.NONE
 
-用户消息：{user_message}
-{context_info}
-{history_info}
-
-请返回JSON格式的分析结果，不要包含任何其他内容：
-{{
-    "intent": "greeting|knowledge_query|new_research|clarification|help|unknown",
-    "confidence": 0.0-1.0,
-    "reasoning": "分析理由",
-    "extracted_topic": "如果意图是new_research或knowledge_query，提取研究主题",
-    "requires_workflow": true或false
-}}
-
-注意：
-- greeting: 简单问候（你好、Hi、Hello等）
-- knowledge_query: 询问已有知识、之前的研究、报告内容等
-- new_research: 新的研究主题、需要完整工作流的请求
-- clarification: 需要更多信息才能理解用户需求
-- help: 请求帮助或说明
-
-请直接返回 JSON，不要使用 Markdown 代码块格式。"""
-
-        try:
-            result = self.invoke_with_json(prompt)
-            return IntentResult(
-                intent=IntentType(result.get("intent", "unknown")),
-                confidence=float(result.get("confidence", 0.5)),
-                reasoning=result.get("reasoning", ""),
-                extracted_topic=result.get("extracted_topic"),
-                requires_workflow=result.get("requires_workflow", False),
-            )
-        except Exception as e:
-            # 失败时默认触发工作流（保守策略）
-            return IntentResult(
-                intent=IntentType.NEW_RESEARCH,
-                confidence=0.5,
-                reasoning=f"意图分析失败，使用默认策略：{str(e)}",
-                extracted_topic=user_message,
-                requires_workflow=True,
-            )
+        return IntentResult(
+            intent=intent,
+            confidence=recognized.confidence,
+            reasoning=recognized.reasoning,
+            extracted_topic=recognized.extracted_topic,
+            requires_workflow=requires_workflow,
+            workflow_mode=recognized.workflow_mode.value,
+        )
 
     def generate_greeting_response(self, user_message: str) -> str:
         """
@@ -253,6 +225,7 @@ class OrchestratorAgent(BaseAgent):
             "intent": intent_result.intent.value,
             "confidence": intent_result.confidence,
             "reasoning": intent_result.reasoning,
+            "workflow_mode": intent_result.workflow_mode,
         }
 
         # 2. 根据意图处理
@@ -275,12 +248,31 @@ class OrchestratorAgent(BaseAgent):
             result["action"] = "knowledge_query"
 
         elif intent_result.intent == IntentType.NEW_RESEARCH:
-            # 触发工作流
+            # 触发工作流（兼容旧意图，按完整流程处理）
             topic = intent_result.extracted_topic or user_message
             result["response"] = f"好的，我将帮您研究「{topic}」。这需要一些时间，请稍候..."
             result["research_topic"] = topic
             result["action"] = "start_workflow"
             result["requires_workflow"] = True
+            result["workflow_mode"] = "full"
+
+        elif intent_result.intent == IntentType.FULL_RESEARCH:
+            # 完整调研 + 生成综述
+            topic = intent_result.extracted_topic or user_message
+            result["response"] = f"好的，我将调研「{topic}」并生成综述论文。这需要一些时间，请稍候..."
+            result["research_topic"] = topic
+            result["action"] = "start_workflow"
+            result["requires_workflow"] = True
+            result["workflow_mode"] = "full"
+
+        elif intent_result.intent == IntentType.SEARCH:
+            # 检索 + 下载论文（检索到后自动下载 PDF，不生成综述）
+            topic = intent_result.extracted_topic or user_message
+            result["response"] = f"好的，我将为您检索并下载「{topic}」相关论文。请确认检索条件后开始..."
+            result["research_topic"] = topic
+            result["action"] = "start_workflow"
+            result["requires_workflow"] = True
+            result["workflow_mode"] = "search"
 
         elif intent_result.intent == IntentType.CLARIFICATION:
             # 需要澄清
@@ -295,10 +287,11 @@ class OrchestratorAgent(BaseAgent):
             result["action"] = "help"
 
         else:
-            # 未知意图，默认触发工作流
+            # 未知意图，默认触发完整工作流（保守：不漏综述需求）
             result["response"] = "我理解您需要进行研究，让我帮您处理..."
             result["action"] = "start_workflow"
             result["requires_workflow"] = True
+            result["workflow_mode"] = "full"
 
         return result
 
