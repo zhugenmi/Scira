@@ -92,6 +92,14 @@ class GraphState(TypedDict):
     pending_download_papers: Optional[List[Dict[str, Any]]]  # [{paper_id,title,authors,year,abstract,pdf_url}]
     download_approval: Optional[str]  # ApprovalStatus value for download step
 
+    # 检索落盘元数据。LangGraph 1.x 仅保留 GraphState 中声明的键，
+    # 未声明的 key 会在节点返回 state 时被丢弃，导致后续节点拿不到。
+    # 这些字段由 retrieval_node 写入，供 run_download_and_rest / reading_node 等读取。
+    retrieval_successful: Optional[bool]  # 检索是否成功
+    current_category: Optional[str]  # 本次检索命中的领域目录名（如 knowledge_graph）
+    pdfs_dir: Optional[str]  # PDF 落盘目录绝对/相对路径
+    papers_saved_path: Optional[str]  # papers 索引文件路径
+
     # ===================
     # Reading Stage
     # ===================
@@ -136,6 +144,13 @@ class GraphState(TypedDict):
     conclusion: Optional[str]  # Auto-generated conclusion
 
     final_review: Optional[str]  # Final revised paper (complete)
+
+    # 编号参考文献清单（写作/修订节点跨节点共享）
+    reference_list: Optional[List[Dict[str, Any]]]
+    # 生成报告落盘路径
+    report_path: Optional[str]
+    # Token 用量统计（跨节点累加）
+    token_usage: Optional[Dict[str, Any]]
 
     # ===================
     # Control Flow
