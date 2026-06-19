@@ -86,6 +86,35 @@ python -m src.mcp.server      # 后端 :8001
 cd frontend && npm install && npm run dev  # 前端 :5173
 ```
 
+## 🪟 Windows 一键启动
+
+在 Windows 上双击项目根目录的 `start.bat` 一键部署启动：
+
+- 自动检查 Python 3.10+ 与 Node.js 环境
+- 自动创建 `.venv` 虚拟环境并安装后端依赖
+- 自动安装前端依赖（`npm install`）
+- 首次运行若无 `.env`，自动从 `.env.example` 复制并用记事本打开
+- 在两个独立窗口分别启动后端 (:8001) 与前端 (:5173)
+
+**环境要求：**
+
+| 依赖 | 版本 | 说明 |
+|------|------|------|
+| Python | ≥ 3.10 | 需加入 PATH |
+| Node.js | ≥ 16 | 随附 npm |
+
+**使用方式：**
+
+1. 双击 `start.bat`，或命令行执行：
+   ```cmd
+   start.bat
+   ```
+2. 首次运行会自动安装依赖，请耐心等待。
+3. 看到两个新窗口分别显示后端、前端启动日志即表示成功。
+4. 浏览器访问 http://localhost:5173
+5. 关闭：直接关闭弹出的"Scira Backend"与"Scira Frontend"窗口。
+
+
 ## 📡 API
 
 | 接口 | 方法 | 说明 |
