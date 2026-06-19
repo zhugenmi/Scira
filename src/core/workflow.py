@@ -314,6 +314,74 @@ def track_token_usage(state: GraphState, input_tokens: int = 0, output_tokens: i
 # ==================== Node Functions ====================
 
 @traceable(name="init_state")
+def _match_existing_category(
+    papers_dir: "Path",
+    user_query: str,
+    approved_topic: str,
+    search_keywords: List[str],
+) -> Optional[str]:
+    """
+    检查本次检索是否命中知识库中已有的类别，命中则复用该类别目录（追加去重）。
+
+    匹配规则（任一命中即视为同一主题）：
+    1. approved_topic 归一化后 == 某已有类别名（最稳，英文规范化主题）
+    2. 本次查询/关键词 与该类别 topic 的关键词集合 Jaccard >= 0.4
+    3. user_query 中文映射出的标准类别名 == 某已有类别名
+    """
+    import json as _json
+    all_papers_file = papers_dir / "all_papers.json"
+    if not all_papers_file.exists():
+        return None
+    try:
+        with open(all_papers_file, "r", encoding="utf-8") as f:
+            index = _json.load(f)
+    except Exception:
+        return None
+
+    categories = index.get("categories", {}) or {}
+    if not categories:
+        return None
+
+    def _norm_tokens(text: str) -> set:
+        if not text:
+            return set()
+        import re as _re
+        # 拆成词，去标点，小写
+        toks = set(_re.sub(r"[^\w一-鿿]", " ", text.lower()).split())
+        toks.discard("")
+        return toks
+
+    # 候选文本：approved_topic 优先，其次 user_query，再拼关键词
+    cand_texts = [approved_topic, user_query]
+    if search_keywords:
+        cand_texts.extend(search_keywords)
+    cand_tokens = set()
+    for t in cand_texts:
+        cand_tokens |= _norm_tokens(t)
+
+    approved_norm = _norm_tokens(approved_topic)
+
+    for cat_name, entry in categories.items():
+        cat_topic = entry.get("topic", "") if isinstance(entry, dict) else ""
+        # 规则1：approved_topic 归一化 == 类别名
+        if approved_topic and _norm_tokens(approved_topic) and (
+            approved_topic.strip().lower().replace(" ", "_") == cat_name.lower()
+            or cat_name.lower() in approved_norm
+        ):
+            logger.info(f"匹配到已有类别 '{cat_name}'（approved_topic 命中），将追加去重")
+            return cat_name
+        # 规则2：topic 关键词 Jaccard
+        cat_tokens = _norm_tokens(cat_topic) | _norm_tokens(cat_name)
+        if cand_tokens and cat_tokens:
+            inter = len(cand_tokens & cat_tokens)
+            union = len(cand_tokens | cat_tokens)
+            if union and inter / union >= 0.4:
+                logger.info(f"匹配到已有类别 '{cat_name}'（关键词 Jaccard={inter/union:.2f}），将追加去重")
+                return cat_name
+
+    return None
+
+
 def init_state(state: GraphState) -> GraphState:
     """Initialize the state with user query."""
     logger.info("=" * 50)
@@ -450,6 +518,16 @@ def retrieval_node(state: GraphState) -> GraphState:
                         "迁移学习": "transfer_learning",
                         "联邦学习": "federated_learning",
                         "因果推理": "causal_inference",
+                        # 知识表示与推理相关（注意：知识图谱与图神经网络是不同领域，勿混淆）
+                        "知识图谱": "knowledge_graph",
+                        "知识表示": "knowledge_representation",
+                        "本体": "ontology",
+                        "图神经网络": "graph_neural_networks",
+                        "图卷积": "graph_neural_networks",
+                        "推荐系统": "recommender_system",
+                        "时序": "time_series",
+                        "异常检测": "anomaly_detection",
+                        "联邦学习": "federated_learning",
                     }
                     for key, value in query_to_category.items():
                         if key in user_query:
@@ -462,6 +540,13 @@ def retrieval_node(state: GraphState) -> GraphState:
                 if not category:
                     category = "general"
                     logger.warning("category empty, fallback to 'general'")
+
+                # 6) 匹配已有类别：若本次检索主题命中知识库中的类别，则复用以追加去重
+                matched = _match_existing_category(
+                    papers_dir, user_query, approved_topic_for_cat, search_keywords
+                )
+                if matched:
+                    category = matched
 
                 # 创建领域目录
                 category_dir = papers_dir / category
@@ -509,50 +594,103 @@ def retrieval_node(state: GraphState) -> GraphState:
                 logger.info(f"Processed {len(current_papers)} papers for category: {category}")
 
                 # 保存当前领域的论文到 JSON 文件
+                # 追加去重：若该类别已有论文，合并后按 paper_id/小写 title 去重（新覆盖旧）
                 category_file = category_dir / f"{category}.json"
+                existing_papers = []
+                existing_topic = user_query
+                existing_keywords: list = []
+                if category_file.exists():
+                    try:
+                        with open(category_file, "r", encoding="utf-8") as f:
+                            existing_data = json.load(f)
+                        existing_papers = existing_data.get("papers", []) or []
+                        # 保留旧 topic（避免被新查询词覆盖，与索引语义一致）
+                        if existing_data.get("topic"):
+                            existing_topic = existing_data["topic"]
+                        existing_keywords = existing_data.get("search_keywords", []) or []
+                    except Exception as e:
+                        logger.warning(f"Failed to read existing category file {category_file}: {e}")
+
+                # 合并去重：以 paper_id 为主键，其次小写 title
+                merged_by_key: Dict[str, Dict[str, Any]] = {}
+
+                def _dedup_key(p: Dict[str, Any]) -> str:
+                    pid = (p.get("paper_id") or "").strip()
+                    if pid:
+                        return f"id:{pid}"
+                    return f"title:{(p.get('title') or '').strip().lower()}"
+
+                for p in existing_papers:
+                    merged_by_key[_dedup_key(p)] = p
+                new_count = 0
+                for p in current_papers:
+                    k = _dedup_key(p)
+                    if k not in merged_by_key:
+                        new_count += 1
+                    merged_by_key[k] = p  # 新覆盖旧
+
+                merged_papers = list(merged_by_key.values())
+                merged_keywords = list(dict.fromkeys(list(existing_keywords) + list(search_keywords)))
+
                 category_metadata = {
                     "category": category,
-                    "topic": user_query,
-                    "search_keywords": search_keywords,
+                    "topic": existing_topic,
+                    "search_keywords": merged_keywords,
                     "retrieved_at": dt.now().isoformat(),
-                    "count": len(current_papers),
-                    "papers": current_papers
+                    "count": len(merged_papers),
+                    "papers": merged_papers,
                 }
                 with open(category_file, "w", encoding="utf-8") as f:
                     json.dump(category_metadata, f, indent=2, ensure_ascii=False)
 
-                logger.info(f"Saved {len(current_papers)} papers to: {category_file}")
+                logger.info(
+                    f"Saved papers to: {category_file} | "
+                    f"existing={len(existing_papers)} new={new_count} merged={len(merged_papers)}"
+                )
 
-                # 更新 all_papers.json - 记录所有领域
+                # 更新 all_papers.json —— 纯知识库索引(各类别的描述来自其自身文件,不被覆盖)
                 all_papers_file = papers_dir / "all_papers.json"
-                all_papers_metadata = {
-                    "topic": user_query,
-                    "search_keywords": search_keywords,
-                    "retrieved_at": dt.now().isoformat(),
-                    "total_papers": len(current_papers),
-                    "current_category": category,
-                    "categories": {}
-                }
+                category_entries = {}
 
-                # 读取已有的 all_papers.json，保留其他领域的记录
+                # 保留已存在的其他类别
                 if all_papers_file.exists():
                     try:
                         with open(all_papers_file, "r", encoding="utf-8") as f:
                             existing_all = json.load(f)
-                            # 保留其他类别的引用
-                            for cat, cat_path in existing_all.get("categories", {}).items():
-                                if cat != category and Path(cat_path).exists():
-                                    all_papers_metadata["categories"][cat] = cat_path
-                    except:
+                            for cat, entry in existing_all.get("categories", {}).items():
+                                if cat == category:
+                                    continue
+                                cat_path = entry.get("path") if isinstance(entry, dict) else entry
+                                if cat_path and Path(cat_path).exists():
+                                    category_entries[cat] = cat_path
+                    except Exception:
                         pass
 
-                # 添加当前类别
-                all_papers_metadata["categories"][category] = str(category_file)
-                all_papers_metadata["total_papers"] = sum(
-                    json.load(open(Path(p), "r", encoding="utf-8")).get("count", 0)
-                    for p in all_papers_metadata["categories"].values()
-                    if Path(p).exists()
-                )
+                # 加入/更新当前类别
+                category_entries[category] = str(category_file)
+
+                # 从各分类文件读取 topic/count,内联到索引
+                categories_index = {}
+                total_papers = 0
+                for cat, cat_path in category_entries.items():
+                    try:
+                        with open(Path(cat_path), "r", encoding="utf-8") as f:
+                            cat_data = json.load(f)
+                        count = int(cat_data.get("count", 0) or 0)
+                        total_papers += count
+                        categories_index[cat] = {
+                            "path": cat_path,
+                            "topic": cat_data.get("topic", ""),
+                            "count": count,
+                        }
+                    except Exception as e:
+                        logger.warning(f"Failed to read category file {cat_path}: {e}")
+
+                all_papers_metadata = {
+                    "total_papers": total_papers,
+                    "updated_at": dt.now().isoformat(),
+                    "categories": categories_index,
+                }
 
                 with open(all_papers_file, "w", encoding="utf-8") as f:
                     json.dump(all_papers_metadata, f, indent=2, ensure_ascii=False)
@@ -564,53 +702,68 @@ def retrieval_node(state: GraphState) -> GraphState:
                 logger.info(f"DEBUG: Set pdfs_dir in retrieval_node: {pdfs_dir}")
                 state["papers_saved_path"] = str(all_papers_file)
 
-                # workflow_mode 控制是否下载 PDF：
-                # - full / search: 检索 + 下载 PDF（search 模式检索后即结束，不生成综述）
-                #   两种模式都下载，区别在检索后是否继续走阅读/分析/写作
+                # workflow_mode 控制是否需要下载 PDF：
+                # - full / search: 检索完成后，把候选论文清单（过滤掉已下载的）暂存到 pending_download_papers，
+                #   通过 paper_download_approval_request 事件让用户确认下载哪些，再由 /api/workflow/approve-download
+                #   触发真正的下载。检索与下载解耦。
                 workflow_mode = (state.get("workflow_mode") or "full").strip().lower()
                 if workflow_mode in ("full", "search"):
-                    # 检索到论文后自动下载 PDF（检索和下载不分开）
-                    logger.info(f"Downloading PDFs to: {pdfs_dir}")
-                    from src.agents.reader import ReaderAgent
+                    from src.agents.reader import sanitize_paper_id_for_filename as _safe_pid
                     from config.settings import get_config
 
                     config = get_config()
                     max_pdf_download = config.max_pdf_download
 
-                    # 根据配置限制下载数量
+                    # 仅保留有 pdf_url 的论文
                     papers_with_pdf = [p for p in state["search_results"] if p.get("pdf_url")]
-                    papers_to_download = papers_with_pdf[:max_pdf_download]
-                    logger.info(f"Limiting PDF download to {max_pdf_download} (configured), {len(papers_with_pdf)} available")
+                    # 去重：跳过 pdfs_dir 下已存在 PDF 的论文（避免重复下载）
+                    pending: List[Dict[str, Any]] = []
+                    skipped_existing = 0
+                    seen_ids = set()
+                    for p in papers_with_pdf[:max_pdf_download]:
+                        pid = p.get("paper_id", "")
+                        if pid in seen_ids:
+                            continue
+                        seen_ids.add(pid)
+                        safe = _safe_pid(pid)
+                        if (pdfs_dir / f"{safe}.pdf").exists():
+                            skipped_existing += 1
+                            continue
+                        pending.append({
+                            "paper_id": pid,
+                            "title": p.get("title", ""),
+                            "authors": p.get("authors", []),
+                            "published_date": p.get("published_date", ""),
+                            "abstract": (p.get("abstract", "") or "")[:300],
+                            "pdf_url": p.get("pdf_url", ""),
+                        })
 
+                    logger.info(
+                        f"Download candidates: {len(pending)} (skipped {skipped_existing} already-downloaded, "
+                        f"{len(papers_with_pdf)} had pdf_url, cap={max_pdf_download})"
+                    )
+
+                    state["pending_download_papers"] = pending
+                    state["download_approval"] = "pending"
+                    # 暂停下载，等待用户确认。literature_data 在确认下载后由 approve-download 流程填充。
+                    state["literature_data"] = []
+                    state["reading_errors"] = []
+
+                    # 推送下载确认事件（前端据此渲染论文清单卡片）
                     _emit_progress(
-                        "retrieval_download",
+                        "paper_download_approval_request",
                         details={
-                            "papers_to_download": len(papers_to_download),
-                            "papers_downloading": len(papers_to_download),
+                            "pending_download_papers": pending,
                             "papers_found": len(state["search_results"]),
+                            "already_downloaded": skipped_existing,
                         },
                     )
-
-                    agent = ReaderAgent(max_workers=4)
-                    download_result = agent.run(papers_to_download, download_dir=str(pdfs_dir))
-                    logger.info(f"PDF download completed: {download_result.completed}/{download_result.total_papers} papers downloaded")
-
-                    # 下载+解析（agent.run 同时完成两步）进行中/完成后推送「论文阅读」状态
-                    _emit_progress(
-                        "reading",
-                        details={
-                            "papers_reading": download_result.completed,
-                            "total_papers": download_result.total_papers,
-                        },
-                    )
-
-                    state["literature_data"] = download_result.literature_data
-                    state["reading_errors"] = download_result.reading_summary.get("failed_papers", [])
                 else:
                     # 非下载模式（none 等）：不下载 PDF
                     logger.info(f"workflow_mode={workflow_mode}, skip PDF download")
                     state["literature_data"] = []
                     state["reading_errors"] = []
+                    state["pending_download_papers"] = []
             except Exception as e:
                 logger.warning(f"Failed to save papers metadata: {e}")
 
@@ -838,6 +991,11 @@ def revision_node(state: GraphState) -> GraphState:
         topic = state.get("research_topic", state.get("user_query", ""))
         logger.info(f"Starting revision for: {topic}")
 
+        # 先准备好编号参考文献清单：既用于引言/结论的 [n] 角标引用，也用于文末追加目录
+        reference_list = state.get("reference_list") or build_reference_list(state)
+        state["reference_list"] = reference_list
+        logger.info(f"Revision reference list: {len(reference_list)} papers")
+
         agent = ReviewerAgent()
 
         result = agent.run(
@@ -846,6 +1004,7 @@ def revision_node(state: GraphState) -> GraphState:
             outline=state.get("outline"),
             global_knowledge=state.get("global_knowledge", {}),
             generate_front_matter=True,
+            reference_list=reference_list,
         )
 
         gs_format = agent.to_graphstate_format(result)
@@ -855,13 +1014,11 @@ def revision_node(state: GraphState) -> GraphState:
         state["conclusion"] = gs_format["conclusion"]
 
         # 在最终报告末尾追加参考文献目录，确保正文中的 [n] 角标有对应出处
-        reference_list = state.get("reference_list") or build_reference_list(state)
         bibliography = format_bibliography(reference_list)
         final_review = gs_format["final_review"] or ""
         if bibliography:
             if "## 参考文献" not in final_review:
                 final_review = final_review.rstrip() + "\n\n" + bibliography
-            state["reference_list"] = reference_list
         state["final_review"] = final_review
 
         # Update phase to final
@@ -949,6 +1106,11 @@ def check_retrieval_result(state: GraphState) -> str:
         logger.info("workflow_mode=search, end workflow after retrieval+download")
         return "done"
 
+    # 检索后若有待确认下载的论文，暂停图执行，等用户确认下载
+    if state.get("pending_download_papers"):
+        logger.info("Pending download approval, pausing graph")
+        return "done"
+
     # Check if retrieval was successful
     if state.get("retrieval_successful", True):
         return "success"
@@ -965,6 +1127,10 @@ def check_retrieval_result(state: GraphState) -> str:
 
 def should_approve_retrieval(state: GraphState) -> str:
     """Check if human approval needed for retrieval."""
+    # 检索后若有待确认下载的论文，暂停图执行，等 /api/workflow/approve-download 触发后续下载
+    if state.get("pending_download_papers"):
+        return "done"
+
     # search 模式：检索 + 下载完成后直接结束
     mode = (state.get("workflow_mode") or "full").strip().lower()
     if mode == "search":
@@ -1126,22 +1292,90 @@ def run_workflow(
     # 注册进度回调（线程本地），供各节点 _emit_progress 推送阶段
     _set_progress_callback(progress_callback)
     try:
-        # 用 stream 而非 invoke：每个节点结束后都能拿到最新 state，便于
-        # 在末尾推送 final 状态；实时阶段更新由节点内 _emit_progress 完成。
-        final_state = initial_state
-        for chunk in app.stream(initial_state, config):
-            # chunk 形如 {node_name: state_after_node}
-            if chunk:
-                last = list(chunk.values())[-1]
-                if isinstance(last, dict):
-                    final_state = last
-        if final_state is initial_state:
-            # 兜底：stream 未产出时回退到 invoke
-            final_state = app.invoke(initial_state, config)
+        # 直接用 invoke 拿最终 state。
+        # 注意：不能再用 app.stream(...) 的「chunk={node: state}」假设——
+        # 当前 langgraph 默认 stream_mode="values"，每个 chunk 是完整 state dict 本身，
+        # 旧代码 list(chunk.values())[-1] 取到的是某字段的值（非 dict），导致 final_state
+        # 始终停留在 initial_state，retrieval_node 写入的 pdfs_dir/current_category 等丢失，
+        # run_download_and_rest 因此回退到 general 目录下载 PDF。实时阶段更新由各节点内
+        # _emit_progress 经线程本地回调推送，不依赖 stream。
+        final_state = app.invoke(initial_state, config)
     finally:
         _clear_progress_callback()
 
     return final_state
+
+
+def run_download_and_rest(
+    state: GraphState,
+    selected_papers: List[Dict[str, Any]],
+    progress_callback=None,
+) -> GraphState:
+    """
+    用户在下载确认卡片上勾选论文并提交后，由 /api/workflow/approve-download 调用。
+
+    流程：
+    1. 对 selected_papers 执行 PDF 下载 + 解析（ReaderAgent.run），填充 literature_data
+    2. search 模式：到此处结束（不生成综述）
+    3. full 模式：依次执行 reading → analysis → outline → writing → revision 节点
+    """
+    logger.info(f">>> run_download_and_rest: {len(selected_papers)} papers to download")
+    _set_progress_callback(progress_callback)
+    try:
+        pdfs_dir = state.get("pdfs_dir")
+        if not pdfs_dir:
+            # 兜底：从 current_category 重建
+            from pathlib import Path as _P
+            cat = state.get("current_category", "general")
+            pdfs_dir = str(_P("data/papers") / cat / "pdfs")
+            state["pdfs_dir"] = pdfs_dir
+
+        if selected_papers:
+            from src.agents.reader import ReaderAgent
+
+            _emit_progress(
+                "retrieval_download",
+                details={
+                    "papers_to_download": len(selected_papers),
+                    "papers_downloading": len(selected_papers),
+                },
+            )
+            agent = ReaderAgent(max_workers=4)
+            download_result = agent.run(selected_papers, download_dir=str(pdfs_dir))
+            logger.info(
+                f"PDF download completed: {download_result.completed}/{download_result.total_papers}"
+            )
+            _emit_progress(
+                "reading",
+                details={
+                    "papers_reading": download_result.completed,
+                    "total_papers": download_result.total_papers,
+                },
+            )
+            state["literature_data"] = download_result.literature_data
+            state["reading_errors"] = download_result.reading_summary.get("failed_papers", [])
+        else:
+            state["literature_data"] = []
+            state["reading_errors"] = []
+
+        state["download_approval"] = ApprovalStatus.APPROVED
+        state["pending_download_papers"] = []
+
+        workflow_mode = (state.get("workflow_mode") or "full").strip().lower()
+        if workflow_mode == "search":
+            # search 模式：下载完成即结束，不生成综述
+            logger.info("workflow_mode=search, done after download")
+            return state
+
+        # full 模式：手动串联后续节点
+        state = reading_node(state)
+        state = analysis_node(state)
+        state = outline_node(state)
+        state = writing_node(state)
+        state = revision_node(state)
+        return state
+    finally:
+        _clear_progress_callback()
 
 
 def run_workflow_stream(

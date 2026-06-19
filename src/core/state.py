@@ -88,6 +88,10 @@ class GraphState(TypedDict):
     # Human approval: Retrieval conditions
     retrieval_approval: Optional[str]  # ApprovalStatus value
 
+    # Download approval: candidate papers awaiting user confirmation before PDF download
+    pending_download_papers: Optional[List[Dict[str, Any]]]  # [{paper_id,title,authors,year,abstract,pdf_url}]
+    download_approval: Optional[str]  # ApprovalStatus value for download step
+
     # ===================
     # Reading Stage
     # ===================

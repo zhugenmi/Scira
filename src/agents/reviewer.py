@@ -24,6 +24,44 @@ from src.agents.prompts import (
 )
 
 
+def _build_citation_instruction(reference_list: Optional[List[Dict[str, Any]]]) -> str:
+    """
+    构造引言/结论等后置生成章节的引用指令块。
+
+    与 WriterAgent.write_section 中的 citation_instruction 保持一致：提供编号清单，
+    要求正文只使用 [n] 角标、不重复列出参考文献、不编造引用。避免引言/结论出现
+    [1] 作者. 题目[J]. 之类的不规范内联条目。
+    """
+    if not reference_list:
+        return (
+            "\n\n# 参考文献引用要求\n"
+            "本次没有可用的参考文献清单。不要在正文中编造任何引用或角标，"
+            "仅基于已知信息客观陈述，参考文献目录将由系统留空。\n"
+        )
+    ref_lines = []
+    for i, r in enumerate(reference_list, 1):
+        authors = r.get("authors") or []
+        if isinstance(authors, str):
+            authors = [a.strip() for a in authors.split(";") if a.strip()]
+        author_str = ", ".join(authors[:3]) + (", 等" if len(authors) > 3 else "") if authors else "佚名"
+        year = r.get("year", "")
+        ref_lines.append(f"[{i}] {author_str}. {r.get('title','')}. {year}")
+    reference_block = "\n".join(ref_lines)
+    return (
+        "\n\n# 参考文献引用要求（非常重要，必须严格遵守）\n"
+        "下方提供了带编号的参考文献清单。这些文献全部来自系统实际检索/知识库，"
+        "你不得自行编造任何清单之外的文献。\n"
+        "撰写正文时，凡涉及某篇论文的方法、观点或结论，必须在对应处用方括号角标引用，"
+        "例如「相关工作表明[1]」「已有研究[2,3]指出」。\n"
+        "- 角标数字必须严格对应清单序号，严禁使用清单中不存在的编号。\n"
+        "- 不得使用其他引用样式（如 (Author, Year)），统一使用 [n] 形式。\n"
+        "- 不得使用 [1] 作者. 题目[J]. 等会展开成完整条目的内联写法。\n"
+        "- 若某论点无法对应到清单中任何一篇文献，则不写角标，绝不编造引用。\n"
+        "- 参考文献目录将由系统自动生成（GB/T 7714-2015 格式），你只需在正文使用 [n] 角标，不要重复列出参考文献。\n"
+        f"\n参考文献清单（仅可引用这些）：\n{reference_block}\n"
+    )
+
+
 @dataclass
 class RevisionFeedback:
     """Revision feedback for a section or the whole paper."""
@@ -173,6 +211,7 @@ class ReviewerAgent:
         paper_content: str,
         topic: str,
         global_knowledge: Optional[Dict[str, Any]] = None,
+        reference_list: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         """
         Generate introduction (首尾后置生成).
@@ -187,6 +226,7 @@ class ReviewerAgent:
             paper_content: Full paper content
             topic: Research topic
             global_knowledge: Analysis results
+            reference_list: 编号参考文献清单，用于正文 [n] 角标引用
 
         Returns:
             Generated introduction
@@ -197,7 +237,7 @@ class ReviewerAgent:
             title=topic,
             topic=topic,
             global_knowledge=global_knowledge_json
-        )
+        ) + _build_citation_instruction(reference_list)
 
         messages = [
             SystemMessage(content=WRITER_SYSTEM),
@@ -212,6 +252,7 @@ class ReviewerAgent:
         paper_content: str,
         topic: str,
         global_knowledge: Optional[Dict[str, Any]] = None,
+        reference_list: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         """
         Generate conclusion (首尾后置生成).
@@ -226,6 +267,7 @@ class ReviewerAgent:
             paper_content: Full paper content
             topic: Research topic
             global_knowledge: Analysis results
+            reference_list: 编号参考文献清单，用于正文 [n] 角标引用
 
         Returns:
             Generated conclusion
@@ -236,7 +278,7 @@ class ReviewerAgent:
             title=topic,
             content=paper_content[:4000],
             global_knowledge=global_knowledge_json
-        )
+        ) + _build_citation_instruction(reference_list)
 
         messages = [
             SystemMessage(content=WRITER_SYSTEM),
@@ -251,6 +293,7 @@ class ReviewerAgent:
         paper_content: str,
         topic: str,
         global_knowledge: Optional[Dict[str, Any]] = None,
+        reference_list: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, str]:
         """
         Generate front matter (首尾后置生成).
@@ -261,6 +304,7 @@ class ReviewerAgent:
             paper_content: Full paper content
             topic: Research topic
             global_knowledge: Analysis results
+            reference_list: 编号参考文献清单，用于引言/结论 [n] 角标引用
 
         Returns:
             Dict with abstract, introduction, conclusion
@@ -269,8 +313,8 @@ class ReviewerAgent:
 
         return {
             "abstract": self.generate_abstract(paper_content, topic, global_knowledge, key_findings),
-            "introduction": self.generate_introduction(paper_content, topic, global_knowledge),
-            "conclusion": self.generate_conclusion(paper_content, topic, global_knowledge),
+            "introduction": self.generate_introduction(paper_content, topic, global_knowledge, reference_list),
+            "conclusion": self.generate_conclusion(paper_content, topic, global_knowledge, reference_list),
         }
 
     # ==================== 最终整合 ====================
@@ -323,6 +367,7 @@ class ReviewerAgent:
         outline: Optional[Dict[str, Any]] = None,
         global_knowledge: Optional[Dict[str, Any]] = None,
         generate_front_matter: bool = True,
+        reference_list: Optional[List[Dict[str, Any]]] = None,
     ) -> ReviewResult:
         """
         Run complete review workflow.
@@ -333,6 +378,7 @@ class ReviewerAgent:
             outline: Paper outline
             global_knowledge: Analysis results
             generate_front_matter: Whether to generate abstract/intro/conclusion
+            reference_list: 编号参考文献清单，传给引言/结论用于 [n] 角标引用
 
         Returns:
             ReviewResult
@@ -347,7 +393,7 @@ class ReviewerAgent:
         final_paper = None
 
         if generate_front_matter:
-            front_matter = self.generate_front_matter(paper_content, topic, global_knowledge)
+            front_matter = self.generate_front_matter(paper_content, topic, global_knowledge, reference_list)
             abstract = front_matter["abstract"]
             introduction = front_matter["introduction"]
             conclusion = front_matter["conclusion"]

@@ -75,7 +75,7 @@ class SciraConfig(BaseModel):
             provider=provider,
             model_name=os.getenv("LLM_MODEL_NAME", "gpt-4o"),
             temperature=float(os.getenv("LLM_TEMPERATURE", "0.7")),
-            max_tokens=int(os.getenv("LLM_MAX_TOKENS", "0")) or None,
+            max_tokens=int(os.getenv("LLM_MAX_TOKENS", "50000")) or None,
             # API 配置
             api_key=os.getenv("OPENAI_API_KEY") or os.getenv("ANTHROPIC_API_KEY"),
             base_url=os.getenv("LLM_BASE_URL"),  # 自定义 API 地址

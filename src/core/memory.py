@@ -351,6 +351,46 @@ class ConversationMemory:
         # 持久化保存
         self._save_session(session)
 
+    def update_last_assistant_message_metadata(self, session_id: str, metadata: Dict[str, Any]) -> bool:
+        """
+        合并写入会话最后一条 assistant 消息的 metadata。
+
+        用于把检索条件 / 下载确认等结构化信息持久化，使刷新页面后前端能还原卡片。
+        返回是否找到并更新了消息。
+        """
+        session = self.get_session(session_id)
+        if not session:
+            return False
+        for msg in reversed(session.messages):
+            if msg.get("role") == "assistant":
+                existing = msg.get("metadata") or {}
+                existing.update(metadata or {})
+                msg["metadata"] = existing
+                session.updated_at = datetime.now().isoformat()
+                self._save_session(session)
+                return True
+        return False
+
+    def update_last_assistant_message_content(self, session_id: str, content: str) -> bool:
+        """
+        用真实完成结果覆盖会话最后一条 assistant 消息的 content。
+
+        修复刷新后仍显示占位符"这需要一些时间..."的问题：占位符在 orchestrator
+        阶段落盘，SSE complete 只更新前端 React state，不回写 session。本方法让
+        后端在工作流完成后把真实结果写回磁盘。
+        """
+        session = self.get_session(session_id)
+        if not session:
+            return False
+        for msg in reversed(session.messages):
+            if msg.get("role") == "assistant":
+                msg["content"] = content
+                msg["timestamp"] = datetime.now().isoformat()
+                session.updated_at = datetime.now().isoformat()
+                self._save_session(session)
+                return True
+        return False
+
     def search_history(self, session_id: str, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
         """搜索历史消息"""
         session = self.get_session(session_id)

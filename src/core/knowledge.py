@@ -109,20 +109,6 @@ def search_papers(query: str, top_k: int = 5) -> List[Dict[str, Any]]:
                 except Exception as e:
                     logger.warning(f"Failed to read {json_file}: {e}")
 
-    # 方法2: 搜索 all_papers.json
-    all_papers_file = PAPERS_DIR / "all_papers.json"
-    if all_papers_file.exists():
-        try:
-            with open(all_papers_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                papers = data.get("papers", [])
-                for paper in papers:
-                    if not any(p.get("paper_id") == paper.get("paper_id") for p in all_papers):
-                        paper["_source"] = "all_papers.json"
-                        all_papers.append(paper)
-        except Exception as e:
-            logger.warning(f"Failed to read all_papers.json: {e}")
-
     # 搜索匹配
     query_lower = query.lower()
     for paper in all_papers:

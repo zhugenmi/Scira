@@ -102,11 +102,30 @@ cd frontend && npm install && npm run dev  # 前端 :5173
 2. 输入研究主题（如"深度学习在医学影像的应用"）
 3. 系统自动完成检索→阅读→分析→写作全流程
 4. 可在"报告生成"查看结果
-### 智能问答
-![alt text](images/hello.png)
+### 文献检索
+![alt text](assets/paper-search.png)
+
+### 文献下载
+![alt text](assets/paper-download.png)
+
+### 论文阅读
+![alt text](assets/paper_reading.png)
+![alt text](assets/paper-reading1.png)
+速览模式：
+![alt text](assets/paper-reading-ft.png)
+深度精读：
+![alt text](assets/paper-reading-dp2.png)
+![alt text](assets/paper-reading-dp1.png)
+研究全景：
+![alt text](assets/paper-reading-fc1.png)
+![alt text](assets/paper-reading-fc2.png)
+
+### 报告生成
+见[生成的报告](assets/强化学习_20260619_132031.md)
+
+
 ### 知识库管理
-![alt text](images/knowledge_base.png)
-### 论文精读
-![alt text](images/paper_reading.png)
+![alt text](assets/knowledge_base.png)
+
 ---
 Powered by [LangGraph](https://langchain-ai.github.io/langgraph/) & [LangChain](https://python.langchain.com/)

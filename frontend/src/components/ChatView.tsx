@@ -29,6 +29,23 @@ interface Approval {
   error?: string
 }
 
+interface PendingPaper {
+  paper_id: string
+  title: string
+  authors: string[] | string
+  published_date: string
+  abstract: string
+  pdf_url: string
+}
+
+interface DownloadApproval {
+  taskId: string
+  papers: PendingPaper[]
+  status: 'pending' | 'submitting' | 'approved' | 'rejected'
+  selectedIds: string[]
+  error?: string
+}
+
 interface Message {
   id: string
   role: 'user' | 'assistant' | 'system'
@@ -36,6 +53,7 @@ interface Message {
   timestamp: Date
   workflowStatus?: string
   approval?: Approval
+  downloadApproval?: DownloadApproval
 }
 
 interface Session {
@@ -138,12 +156,24 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
       if (response.ok) {
         const data = await response.json()
         if (data.messages && data.messages.length > 0) {
-          const historyMessages: Message[] = data.messages.map((msg: any, index: number) => ({
-            id: `${sid}-${index}`,
-            role: msg.role === 'user' ? 'user' : 'assistant',
-            content: msg.content,
-            timestamp: new Date(msg.timestamp || Date.now())
-          }))
+          const historyMessages: Message[] = data.messages.map((msg: any, index: number) => {
+            const m: Message = {
+              id: `${sid}-${index}`,
+              role: msg.role === 'user' ? 'user' : 'assistant',
+              content: msg.content,
+              timestamp: new Date(msg.timestamp || Date.now())
+            }
+            // 从 metadata 还原检索条件卡片（只读"已确认"态）
+            const meta = msg.metadata || {}
+            if (m.role === 'assistant' && meta.retrieval_conditions && meta.conditions_approved) {
+              m.approval = {
+                taskId: `${sid}-${index}`,
+                conditions: meta.retrieval_conditions,
+                status: 'approved',
+              }
+            }
+            return m
+          })
           setMessages([{
             id: 'welcome',
             role: 'system',
@@ -248,6 +278,26 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
                 : msg
             ))
             break
+
+          case 'paper_download_approval_request': {
+            // 检索完成，渲染论文下载确认卡片，等用户勾选
+            const papers: PendingPaper[] = data.data?.papers || []
+            setMessages(prev => prev.map(msg =>
+              msg.id === assistantMessageId
+                ? {
+                    ...msg,
+                    workflowStatus: `检索完成，请确认要下载的论文（共 ${papers.length} 篇候选）`,
+                    downloadApproval: {
+                      taskId: data.data?.task_id || taskId,
+                      papers,
+                      status: 'pending',
+                      selectedIds: papers.map(p => p.paper_id),
+                    },
+                  }
+                : msg
+            ))
+            break
+          }
 
           case 'complete':
             setStatus('completed')
@@ -646,6 +696,91 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
     }
   }
 
+  // 切换某篇候选论文的勾选状态
+  const handleToggleDownloadPaper = (assistantMessageId: string, paperId: string) => {
+    setMessages(prev => prev.map(m => {
+      if (m.id !== assistantMessageId || !m.downloadApproval) return m
+      const cur = m.downloadApproval.selectedIds
+      const selectedIds = cur.includes(paperId) ? cur.filter(id => id !== paperId) : [...cur, paperId]
+      return { ...m, downloadApproval: { ...m.downloadApproval, selectedIds } }
+    }))
+  }
+
+  // 确认下载：提交勾选的 paper_id，后端执行下载 + 后续节点
+  const handleApproveDownload = async (assistantMessageId: string, taskId: string, selectedIds: string[]) => {
+    setMessages(prev => prev.map(m =>
+      m.id === assistantMessageId && m.downloadApproval
+        ? { ...m, downloadApproval: { ...m.downloadApproval!, status: 'submitting', error: undefined }, workflowStatus: `开始下载 ${selectedIds.length} 篇论文...` }
+        : m
+    ))
+    try {
+      const res = await fetch('/api/workflow/approve-download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task_id: taskId, decision: 'approve', selected_paper_ids: selectedIds, session_id: sessionId || undefined }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (res.ok && (data.status === 'running' || data.status === 'completed')) {
+        setMessages(prev => prev.map(m =>
+          m.id === assistantMessageId && m.downloadApproval
+            ? { ...m, downloadApproval: { ...m.downloadApproval!, status: 'approved' } }
+            : m
+        ))
+        setStatus('running')
+        startWorkflowSSE(taskId, assistantMessageId)
+      } else {
+        setMessages(prev => prev.map(m =>
+          m.id === assistantMessageId && m.downloadApproval
+            ? { ...m, downloadApproval: { ...m.downloadApproval!, status: 'pending', error: data.detail || '提交失败' } }
+            : m
+        ))
+      }
+    } catch (e) {
+      setMessages(prev => prev.map(m =>
+        m.id === assistantMessageId && m.downloadApproval
+          ? { ...m, downloadApproval: { ...m.downloadApproval!, status: 'pending', error: '网络错误' } }
+          : m
+      ))
+    }
+  }
+
+  // 跳过下载：不下载 PDF，任务标记完成
+  const handleRejectDownload = async (assistantMessageId: string, taskId: string) => {
+    setMessages(prev => prev.map(m =>
+      m.id === assistantMessageId && m.downloadApproval
+        ? { ...m, downloadApproval: { ...m.downloadApproval!, status: 'submitting', error: undefined } }
+        : m
+    ))
+    try {
+      const res = await fetch('/api/workflow/approve-download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task_id: taskId, decision: 'reject', session_id: sessionId || undefined }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (res.ok && data.status === 'completed') {
+        setMessages(prev => prev.map(m =>
+          m.id === assistantMessageId && m.downloadApproval
+            ? { ...m, downloadApproval: { ...m.downloadApproval!, status: 'rejected' }, workflowStatus: undefined, content: '已跳过下载。论文已入库知识库（未下载 PDF）。' }
+            : m
+        ))
+        setStatus('completed')
+      } else {
+        setMessages(prev => prev.map(m =>
+          m.id === assistantMessageId && m.downloadApproval
+            ? { ...m, downloadApproval: { ...m.downloadApproval!, status: 'pending', error: data.detail || '提交失败' } }
+            : m
+        ))
+      }
+    } catch (e) {
+      setMessages(prev => prev.map(m =>
+        m.id === assistantMessageId && m.downloadApproval
+          ? { ...m, downloadApproval: { ...m.downloadApproval!, status: 'pending', error: '网络错误' } }
+          : m
+      ))
+    }
+  }
+
   // Load session on mount
   useEffect(() => {
     const initSession = async () => {
@@ -903,6 +1038,15 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
                 />
               )}
 
+              {message.role === 'assistant' && message.downloadApproval && (
+                <PaperDownloadCard
+                  approval={message.downloadApproval}
+                  onApprove={(selectedIds) => handleApproveDownload(message.id, message.downloadApproval!.taskId, selectedIds)}
+                  onReject={() => handleRejectDownload(message.id, message.downloadApproval!.taskId)}
+                  onToggle={(paperId) => handleToggleDownloadPaper(message.id, paperId)}
+                />
+              )}
+
               {message.role === 'assistant' && message.workflowStatus && (
                 <div className="flex items-center gap-1.5 mt-1 text-xs text-dark-muted">
                   <Loader2 className="w-3 h-3 animate-spin" />
@@ -1091,6 +1235,116 @@ function ApprovalCard({
         <div className="mt-3 flex items-center gap-1.5 text-xs text-green-400">
           <Check className="w-3.5 h-3.5" />
           已确认检索条件，正在检索…
+        </div>
+      )}
+    </div>
+  )
+}
+
+function PaperDownloadCard({
+  approval,
+  onApprove,
+  onReject,
+  onToggle,
+}: {
+  approval: DownloadApproval
+  onApprove: (selectedIds: string[]) => void
+  onReject: () => void
+  onToggle: (paperId: string) => void
+}) {
+  const { papers, selectedIds, status, error } = approval
+  const allSelected = papers.length > 0 && selectedIds.length === papers.length
+  const readonly = status === 'approved' || status === 'rejected' || status === 'submitting'
+
+  const fmtAuthors = (a: string[] | string) => {
+    const arr = Array.isArray(a) ? a : (a ? String(a).split(';').map(s => s.trim()).filter(Boolean) : [])
+    if (!arr.length) return '佚名'
+    const head = arr.slice(0, 3).join(', ')
+    return arr.length > 3 ? `${head} 等` : head
+  }
+  const fmtYear = (d: string) => {
+    if (!d) return ''
+    const m = String(d).match(/\d{4}/)
+    return m ? m[0] : ''
+  }
+
+  const toggleAll = () => {
+    if (allSelected) {
+      papers.forEach(p => { if (selectedIds.includes(p.paper_id)) onToggle(p.paper_id) })
+    } else {
+      papers.forEach(p => { if (!selectedIds.includes(p.paper_id)) onToggle(p.paper_id) })
+    }
+  }
+
+  return (
+    <div className="mt-3 rounded-xl border border-primary-500/30 bg-primary-500/5 p-3 text-left">
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-sm font-medium text-dark-text">
+          论文下载确认 <span className="text-dark-muted">（共 {papers.length} 篇候选）</span>
+        </div>
+        {!readonly && (
+          <button
+            onClick={toggleAll}
+            className="text-xs px-2 py-1 rounded border border-dark-border hover:bg-dark-surface text-dark-muted"
+          >
+            {allSelected ? '取消全选' : '全选'}
+          </button>
+        )}
+      </div>
+
+      <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
+        {papers.map((p) => {
+          const checked = selectedIds.includes(p.paper_id)
+          return (
+            <label
+              key={p.paper_id}
+              className={`flex gap-2 items-start p-2 rounded-lg border transition-colors ${
+                checked ? 'border-primary-500/50 bg-primary-500/10' : 'border-dark-border bg-dark-surface/40'
+              } ${readonly ? 'cursor-default opacity-80' : 'cursor-pointer hover:bg-dark-surface'}`}
+            >
+              <input
+                type="checkbox"
+                checked={checked}
+                disabled={readonly}
+                onChange={() => onToggle(p.paper_id)}
+                className="mt-0.5 accent-primary-500"
+              />
+              <div className="min-w-0 flex-1">
+                <div className="text-sm text-dark-text font-medium truncate">{p.title || 'Untitled'}</div>
+                <div className="text-xs text-dark-muted truncate">
+                  {fmtAuthors(p.authors)}{fmtYear(p.published_date) ? ` · ${fmtYear(p.published_date)}` : ''}
+                </div>
+                {p.abstract && (
+                  <div className="text-xs text-dark-muted/80 mt-0.5 line-clamp-2">{p.abstract}</div>
+                )}
+              </div>
+            </label>
+          )
+        })}
+      </div>
+
+      {error && <div className="text-xs text-red-400 mt-2">{error}</div>}
+
+      {!readonly ? (
+        <div className="flex gap-2 mt-3">
+          <button
+            onClick={() => onApprove(selectedIds)}
+            disabled={selectedIds.length === 0}
+            className="flex-1 px-3 py-1.5 rounded-lg bg-primary-500 hover:bg-primary-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium transition-colors"
+          >
+            确认下载 {selectedIds.length} 篇
+          </button>
+          <button
+            onClick={onReject}
+            className="px-3 py-1.5 rounded-lg border border-dark-border hover:bg-dark-surface text-dark-muted text-sm transition-colors"
+          >
+            跳过下载
+          </button>
+        </div>
+      ) : (
+        <div className="mt-2 text-xs text-green-400 flex items-center gap-1">
+          <Check className="w-3 h-3" />
+          {status === 'approved' ? `已确认下载 ${selectedIds.length} 篇` : status === 'rejected' ? '已跳过下载' : '提交中...'}
         </div>
       )}
     </div>

@@ -390,6 +390,19 @@ class RetrievalAgent:
             "扩散模型": "diffusion model",
             "计算机视觉": "computer vision",
             "自然语言处理": "natural language processing",
+            # 知识表示与图学习领域：知识图谱(KG)与图神经网络(GNN)是不同方向，分别给出准确英文
+            # 以避免下游把"知识图谱"误翻/误归类到 graph neural networks
+            "知识图谱": "knowledge graph",
+            "知识表示": "knowledge representation",
+            "本体": "ontology",
+            "图神经网络": "graph neural network",
+            "图卷积": "graph convolution",
+            "推荐系统": "recommender system",
+            "迁移学习": "transfer learning",
+            "联邦学习": "federated learning",
+            "元学习": "meta learning",
+            "多模态": "multimodal",
+            "因果推理": "causal inference",
         }
         result = query
         for cn, en in translations.items():
