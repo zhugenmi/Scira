@@ -1,113 +1,118 @@
 @echo off
-chcp 65001 > nul
-setlocal enabledelayedexpansion
-title Scira 一键启动
+setlocal
+title Scira One-Click Start
 
 REM ============================================================
-REM  Scira Windows 一键启动脚本
-REM  - 检查 Python / Node 环境
-REM  - 自动安装后端 / 前端依赖（首次运行）
-REM  - 同时启动后端 (:8001) 与前端 (:5173)
+REM  Scira Windows one-click start script
+REM  ASCII + CRLF only. No delayed expansion needed.
 REM ============================================================
 
 cd /d "%~dp0"
 
 echo.
 echo ============================================================
-echo   Scira 一键启动
+echo   Scira One-Click Start
 echo ============================================================
 echo.
 
-REM ---- 检查 Python ----
+REM ---- Check Python ----
 where python >nul 2>nul
 if errorlevel 1 (
-    echo [错误] 未检测到 Python，请先安装 Python 3.10+ 并加入 PATH。
-    pause
-    exit /b 1
+    echo [ERROR] Python not found. Install Python 3.10+ and add to PATH.
+    goto :end
 )
 
-REM ---- 检查 Node ----
+REM ---- Check Node ----
 where node >nul 2>nul
 if errorlevel 1 (
-    echo [错误] 未检测到 Node.js，请先安装 Node.js 16+ 并加入 PATH。
-    pause
-    exit /b 1
+    echo [ERROR] Node.js not found. Install Node.js 16+ and add to PATH.
+    goto :end
 )
 
-REM ---- 检查 npm ----
+REM ---- Check npm ----
 where npm >nul 2>nul
 if errorlevel 1 (
-    echo [错误] 未检测到 npm，请随 Node.js 一同安装。
-    pause
-    exit /b 1
+    echo [ERROR] npm not found. Install npm together with Node.js.
+    goto :end
 )
 
-REM ---- 检查 .env ----
+REM ---- Check .env ----
 if not exist ".env" (
     if exist ".env.example" (
-        echo [提示] 未发现 .env，从 .env.example 复制...
+        echo [INFO] .env not found, copying from .env.example ...
         copy /Y ".env.example" ".env" >nul
-        echo [警告] 请编辑 .env 填入 API Key 后重新运行本脚本。
+        echo [WARN] Edit .env to fill in your API Key, then re-run this script.
         notepad ".env"
-        pause
-        exit /b 0
+        goto :end
     ) else (
-        echo [错误] 未找到 .env 或 .env.example，请先创建 .env。
-        pause
-        exit /b 1
+        echo [ERROR] Neither .env nor .env.example found.
+        goto :end
     )
 )
 
-REM ---- 后端依赖 ----
-if not exist ".venv" (
-    echo [步骤] 创建 Python 虚拟环境 .venv ...
+REM ---- Create venv if missing ----
+if not exist ".venv\Scripts\python.exe" (
+    echo [STEP] Creating Python virtual env .venv ...
     python -m venv .venv
-)
-
-call ".venv\Scripts\activate.bat"
-
-echo [步骤] 检查后端依赖...
-pip show scira >nul 2>nul
-if errorlevel 1 (
-    echo [步骤] 安装后端依赖（首次运行较慢）...
-    pip install -e .
     if errorlevel 1 (
-        echo [错误] 后端依赖安装失败。
-        pause
-        exit /b 1
+        echo [ERROR] Failed to create .venv
+        goto :end
     )
+    echo [STEP] Upgrading pip via Tsinghua mirror ...
+    ".venv\Scripts\python.exe" -m pip install --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple --timeout 300
 )
 
-REM ---- 前端依赖 ----
+REM ---- Backend deps ----
+REM Use Tsinghua mirror to avoid PyPI read timeouts in CN.
+set "PIP_MIRROR=https://pypi.tuna.tsinghua.edu.cn/simple"
+echo [STEP] Checking backend deps ...
+".venv\Scripts\python.exe" -m pip show scira >nul 2>nul
+if errorlevel 1 (
+    echo [STEP] Installing backend deps via Tsinghua mirror ...
+    echo [STEP] This may take several minutes on first run, please wait ...
+    ".venv\Scripts\python.exe" -m pip install -e . -i %PIP_MIRROR% --timeout 300 --retries 10
+    if errorlevel 1 (
+        echo [ERROR] Backend deps install failed.
+        echo [HINT] Check network, or edit PIP_MIRROR in start.bat to use another mirror.
+        goto :end
+    )
+) else (
+    echo [INFO] Backend deps already installed.
+)
+
+REM ---- Frontend deps ----
 if not exist "frontend\node_modules" (
-    echo [步骤] 安装前端依赖（首次运行较慢）...
+    echo [STEP] Installing frontend deps, first run may be slow ...
     pushd frontend
     call npm install
     if errorlevel 1 (
-        echo [错误] 前端依赖安装失败。
+        echo [ERROR] Frontend deps install failed.
         popd
-        pause
-        exit /b 1
+        goto :end
     )
     popd
+) else (
+    echo [INFO] Frontend deps already installed.
 )
 
-REM ---- 启动后端（新窗口）----
-echo [步骤] 启动后端服务 http://localhost:8001 ...
-start "Scira Backend" cmd /k "cd /d %~dp0 && call .venv\Scripts\activate.bat && python -m src.mcp.server"
+REM ---- Start backend (new window) ----
+echo [STEP] Starting backend at http://localhost:8001 ...
+start "Scira Backend" cmd /k "cd /d "%~dp0" && set "PYTHONPATH=%~dp0" && .venv\Scripts\python.exe -m src.mcp.server"
 
-REM ---- 启动前端（新窗口）----
-echo [步骤] 启动前端服务 http://localhost:5173 ...
-start "Scira Frontend" cmd /k "cd /d %~dp0\frontend && npm run dev"
+REM ---- Start frontend (new window) ----
+echo [STEP] Starting frontend at http://localhost:5173 ...
+start "Scira Frontend" cmd /k "cd /d %~dp0frontend && npm run dev"
 
 echo.
 echo ============================================================
-echo   启动完成！
-echo   后端: http://localhost:8001
-echo   前端: http://localhost:5173
-echo   关闭服务: 直接关闭弹出的两个命令行窗口
+echo   Started successfully.
+echo   Backend:  http://localhost:8001
+echo   Frontend: http://localhost:5173
+echo   To stop: close the two popped-up windows.
 echo ============================================================
+
+:end
 echo.
-echo 本窗口可以关闭。如需停止服务请关闭后端/前端窗口。
-pause
+echo Press any key to close this window ...
+pause >nul
 endlocal
