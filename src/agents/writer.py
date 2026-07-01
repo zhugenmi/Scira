@@ -167,6 +167,7 @@ class WriterAgent:
         self,
         section: PaperSection,
         context: Dict[str, Any],
+        stream_callback: Optional[Callable[[str, str, str], None]] = None,
     ) -> PaperSection:
         """
         Write a single section.
@@ -174,6 +175,7 @@ class WriterAgent:
         Args:
             section: Section to write
             context: Context information
+            stream_callback: 可选 (section_id, section_title, token) 回调，流式输出时逐 token 调用
 
         Returns:
             Updated section with content
@@ -244,8 +246,17 @@ class WriterAgent:
                 HumanMessage(content=prompt)
             ]
 
-            content = self.llm.invoke(messages)
-            record_token_usage(content, self.config.model.model_name or "gpt-4o")
+            if stream_callback:
+                chunks = []
+                for chunk in self.llm.stream(messages):
+                    c = chunk.content if hasattr(chunk, 'content') else str(chunk)
+                    chunks.append(c)
+                    if c:
+                        stream_callback(section.section_id, section.title, c)
+                content = "".join(chunks)
+            else:
+                content = self.llm.invoke(messages)
+                record_token_usage(content, self.config.model.model_name or "gpt-4o")
 
             section.content = content.content if hasattr(content, 'content') else str(content)
             section.word_count = len(section.content.split())
@@ -346,6 +357,7 @@ Output ONLY the section content.
         sections: List[PaperSection],
         context: Dict[str, Any],
         max_workers: int = 3,
+        stream_callback: Optional[Callable[[str, str, str], None]] = None,
     ) -> Dict[str, PaperSection]:
         """
         Write multiple sections in parallel.
@@ -374,7 +386,7 @@ Output ONLY the section content.
             section_context = context.copy()
             section_context["previous_sections"] = previous_sections
 
-            result = self.write_section(section, section_context)
+            result = self.write_section(section, section_context, stream_callback=stream_callback)
             results[section.section_id] = result
 
             if result.status == "completed":
@@ -470,6 +482,7 @@ Output ONLY the section content.
         literature_clusters: Optional[List[Dict]] = None,
         max_workers: int = 3,
         reference_list: Optional[List[Dict[str, Any]]] = None,
+        stream_callback: Optional[Callable[[str, str, str], None]] = None,
     ) -> WritingResult:
         """
         Run complete writing workflow.
@@ -498,7 +511,7 @@ Output ONLY the section content.
 
         # Write sections (in order to maintain continuity)
         # Note: We write sequentially for better coherence
-        sections = self.write_batch(outline.sections, context, max_workers)
+        sections = self.write_batch(outline.sections, context, max_workers, stream_callback=stream_callback)
 
         # Get section order from outline
         section_order = [s.section_id for s in outline.sections]
