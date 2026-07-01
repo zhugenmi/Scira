@@ -36,6 +36,11 @@ class IntentType(str, Enum):
     KNOWLEDGE_QUERY = "knowledge_query"
     FULL_RESEARCH = "full_research"
     SEARCH = "search"          # 检索 + 下载论文（不生成综述）
+    # 子任务意图：只生成对应章节，不触发完整检索/写作工作流。
+    # 复用 workflow_mode=NONE，由 Orchestrator 直连 ReviewerAgent 生成器。
+    GENERATE_ABSTRACT = "generate_abstract"
+    GENERATE_INTRODUCTION = "generate_introduction"
+    GENERATE_CONCLUSION = "generate_conclusion"
     CLARIFICATION = "clarification"
     HELP = "help"
     UNKNOWN = "unknown"
@@ -47,6 +52,9 @@ _INTENT_TO_MODE: Dict[str, WorkflowMode] = {
     IntentType.KNOWLEDGE_QUERY.value: WorkflowMode.NONE,
     IntentType.FULL_RESEARCH.value: WorkflowMode.FULL,
     IntentType.SEARCH.value: WorkflowMode.SEARCH,
+    IntentType.GENERATE_ABSTRACT.value: WorkflowMode.NONE,
+    IntentType.GENERATE_INTRODUCTION.value: WorkflowMode.NONE,
+    IntentType.GENERATE_CONCLUSION.value: WorkflowMode.NONE,
     IntentType.CLARIFICATION.value: WorkflowMode.NONE,
     IntentType.HELP.value: WorkflowMode.NONE,
     IntentType.UNKNOWN.value: WorkflowMode.FULL,  # 未知时保守走完整流程
@@ -176,13 +184,24 @@ class IntentAgent(BaseAgent):
         """
         关键词兜底：LLM 不可用时按规则字面匹配。
 
-        规则优先级：综述/报告 > 检索/查找/下载 > 默认完整流程。
+        规则优先级（自上而下，命中即返回）：
+        1. 综述/报告/写论文 → full_research
+        2. 检索/查找/搜索/下载论文 → search
+        3. 生成摘要/写摘要 → generate_abstract
+        4. 生成引言/写引言 → generate_introduction
+        5. 生成结论/生成总结/写结论/写总结 → generate_conclusion
+        6. 默认完整流程（保守：不漏掉用户的综述需求）
         检索和下载统一归为 search 模式（检索后自动下载）。
         """
         msg = user_message or ""
         has_report = any(k in msg for k in ("综述", "报告", "写一篇", "写论文", "生成论文", "review", "survey"))
         has_search = any(k in msg for k in (
             "检索", "查找", "搜索", "下载", "获取", "search", "find", "look up", "download", "fetch",
+        ))
+        has_abstract = any(k in msg for k in ("生成摘要", "写摘要", "写个摘要", "写一个摘要", "帮我写摘要"))
+        has_intro = any(k in msg for k in ("生成引言", "写引言", "写个引言", "写开头", "帮我写引言", "引言部分"))
+        has_conclusion = any(k in msg for k in (
+            "生成结论", "生成总结", "写结论", "写总结", "收尾", "结论部分", "帮我写结论",
         ))
 
         if has_report:
@@ -199,6 +218,30 @@ class IntentAgent(BaseAgent):
                 workflow_mode=WorkflowMode.SEARCH,
                 confidence=0.6,
                 reasoning=f"keyword fallback (search): {err}",
+                extracted_topic=msg,
+            )
+        if has_abstract:
+            return IntentResult(
+                intent=IntentType.GENERATE_ABSTRACT,
+                workflow_mode=WorkflowMode.NONE,
+                confidence=0.7,
+                reasoning=f"keyword fallback (abstract): {err}",
+                extracted_topic=msg,
+            )
+        if has_intro:
+            return IntentResult(
+                intent=IntentType.GENERATE_INTRODUCTION,
+                workflow_mode=WorkflowMode.NONE,
+                confidence=0.7,
+                reasoning=f"keyword fallback (introduction): {err}",
+                extracted_topic=msg,
+            )
+        if has_conclusion:
+            return IntentResult(
+                intent=IntentType.GENERATE_CONCLUSION,
+                workflow_mode=WorkflowMode.NONE,
+                confidence=0.7,
+                reasoning=f"keyword fallback (conclusion): {err}",
                 extracted_topic=msg,
             )
         # 默认完整流程（保守：不漏掉用户的综述需求）

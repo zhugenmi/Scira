@@ -43,8 +43,11 @@ export default function PaperReading() {
   const [analyzing, setAnalyzing] = useState(false)
   const [result, setResult] = useState<AnalysisResult | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [progressMsg, setProgressMsg] = useState<string | null>(null)
   const [showSettings, setShowSettings] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  // 流式累积 buffer：用 ref 避免 SSE 回调里的 stale state
+  const streamBufferRef = useRef<string>('')
 
   // 加载知识库论文列表
   const loadLibraryPapers = async () => {
@@ -215,44 +218,81 @@ export default function PaperReading() {
       const decoder = new TextDecoder()
       let buffer = ''
 
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
+      // 流式增量渲染：token 累积到 ref，定时 flush 到 result.markdown
+      streamBufferRef.current = ''
+      let flushTimer: ReturnType<typeof setInterval> | null = null
+      const flush = () => {
+        const text = streamBufferRef.current
+        if (!text) return
+        setResult({
+          markdown: text,
+          mode: readingMode,
+          title: selectedPaper.title,
+          fromCache: false,
+        })
+      }
+      flushTimer = setInterval(flush, 80)
 
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n')
-        buffer = lines.pop() || ''
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
 
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const jsonStr = line.slice(6).trim()
-            if (!jsonStr) continue
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split('\n')
+          buffer = lines.pop() || ''
 
-            try {
-              const parsed = JSON.parse(jsonStr)
-              const data = parsed.data || parsed
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const jsonStr = line.slice(6).trim()
+              if (!jsonStr) continue
 
-              if (parsed.type === 'complete') {
-                setResult({
-                  markdown: data.markdown,
-                  json: data.json,
-                  mode: readingMode,
-                  title: selectedPaper.title,
-                  fromCache: data.from_cache
-                })
-              } else if (parsed.type === 'error') {
-                setError(data.message)
+              try {
+                const parsed = JSON.parse(jsonStr)
+                const data = parsed.data || parsed
+
+                if (parsed.type === 'token') {
+                  // 累积 token，由 flushTimer 定时渲染
+                  streamBufferRef.current += data.token || ''
+                } else if (parsed.type === 'progress') {
+                  setProgressMsg(data.message || null)
+                } else if (parsed.type === 'complete') {
+                  // 最终结果覆盖（确保完整，避免 flush 漏尾）
+                  streamBufferRef.current = ''
+                  setResult({
+                    markdown: data.markdown,
+                    json: data.json,
+                    mode: readingMode,
+                    title: selectedPaper.title,
+                    fromCache: data.from_cache
+                  })
+                } else if (parsed.type === 'error') {
+                  setError(data.message || '分析失败')
+                }
+              } catch {
+                // 忽略解析错误
               }
-            } catch {
-              // 忽略解析错误
             }
           }
+        }
+      } finally {
+        if (flushTimer) clearInterval(flushTimer)
+        // 兜底 flush：若 complete 未到但流已结束
+        if (streamBufferRef.current) {
+          setResult({
+            markdown: streamBufferRef.current,
+            mode: readingMode,
+            title: selectedPaper.title,
+            fromCache: false,
+          })
+          streamBufferRef.current = ''
         }
       }
     } catch (e: any) {
       setError(e.message || '分析失败，请重试')
     } finally {
       setAnalyzing(false)
+      setProgressMsg(null)
     }
   }
 
@@ -308,6 +348,15 @@ export default function PaperReading() {
                       <span className="text-green-400 flex items-center gap-1">
                         <span className="w-1.5 h-1.5 bg-green-400 rounded-full"></span>
                         缓存命中（历史分析）
+                      </span>
+                    </>
+                  )}
+                  {analyzing && progressMsg && (
+                    <>
+                      <span>·</span>
+                      <span className="text-primary-400 flex items-center gap-1">
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                        {progressMsg}
                       </span>
                     </>
                   )}

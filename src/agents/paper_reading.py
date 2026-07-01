@@ -318,13 +318,13 @@ def build_paper_context(parsed: ParsedPaper, mode: str = "snap", max_chars: int 
     """构建论文上下文。
 
     根据精读模式调整截取策略：
-    - snap: 12K字符，仅摘要+关键章节
+    - snap: 8K字符，仅摘要+关键章节（速览不需要全文，降 TTFB）
     - lens: 24K字符，包含方法/实验完整内容
     - sphere: 18K字符，包含相关工作+参考文献
-    - qa: 15K字符，平衡覆盖
+    - qa: 12K字符，平衡覆盖
     """
     # 按模式调整上下文长度
-    mode_chars = {"snap": 12000, "lens": 24000, "sphere": 18000, "qa": 15000}
+    mode_chars = {"snap": 8000, "lens": 24000, "sphere": 18000, "qa": 12000}
     max_chars = mode_chars.get(mode, max_chars)
 
     parts = []
@@ -425,36 +425,38 @@ def save_result(paper_id: str, mode: str, language: str, result: Dict[str, Any])
         logger.error(f"保存缓存失败: {cache_file}, {e}")
 
 
-def analyze_paper(
+def analyze_paper_stream(
     pdf_path: str,
     paper_id: str,
     mode: str = "snap",
     language: str = "zh",
     use_cache: bool = True,
-) -> Dict[str, Any]:
+):
     """
-    分析论文
+    流式分析论文（生成器）。
 
-    Args:
-        pdf_path: PDF文件路径（绝对路径）
-        paper_id: 论文ID
-        mode: 阅读模式 (snap/lens/sphere/qa)
-        language: 输出语言 (zh/en)
-        use_cache: 是否使用缓存（默认True，重复分析直接读缓存）
+    yield 一系列事件 dict，type 取值：
+    - {"type": "cache_hit", "result": {...}}           缓存命中，秒级返回
+    - {"type": "progress", "message": "...", "progress": N}
+    - {"type": "token", "text": "..."}                 LLM 流式 token
+    - {"type": "complete", "result": {...}}            完成（含 markdown/json/from_cache）
+    - {"type": "error", "message": "...", "result": {...}}  PDF 解析或 LLM 失败
 
-    Returns:
-        dict with markdown and json fields
+    LLM 流式通过 llm.stream() 实现，首字延迟≈LLM TTFB；provider 不支持流式时
+    自动降级为 invoke 后一次性 yield 全文 token。
     """
-    logger.info(f"开始分析论文: paper_id={paper_id}, mode={mode}, pdf_path={pdf_path}")
+    logger.info(f"开始流式分析论文: paper_id={paper_id}, mode={mode}, pdf_path={pdf_path}")
 
     # 0. 检查缓存
     if use_cache:
         cached = load_cached_result(paper_id, mode, language)
         if cached:
             cached["from_cache"] = True
-            return cached
+            yield {"type": "cache_hit", "result": cached}
+            return
 
     # 1. 解析PDF
+    yield {"type": "progress", "message": "正在解析 PDF...", "progress": 20}
     parser = PDFParser(backend=ParserBackend.PYMUPDF)
     try:
         parsed = parser.parse(pdf_path, paper_id, extract_sections=True)
@@ -462,37 +464,57 @@ def analyze_paper(
                     f"sections={len(parsed.sections)}, words={parsed.word_count}")
     except Exception as e:
         logger.error(f"PDF解析失败: {e}")
-        return {
+        err_result = {
             "markdown": f"# 解析失败\n\nPDF解析出错: {str(e)}",
             "json": json.dumps({"error": str(e)}, ensure_ascii=False),
             "error": str(e),
+            "from_cache": False,
         }
+        yield {"type": "error", "message": str(e), "result": err_result}
+        return
 
-    # 2. 构建上下文（根据模式调整长度和侧重点）
+    # 2. 构建上下文
     context = build_paper_context(parsed, mode=mode)
     logger.info(f"上下文构建完成: mode={mode}, {len(context)}字符")
+    yield {"type": "progress", "message": f"已提取 {len(context)} 字符，调用 LLM 分析...", "progress": 40}
 
-    # 3. 调用LLM
+    # 3. 调用LLM（流式优先，降级 invoke）
     system_prompt = get_prompt(mode, language)
     user_prompt = "请基于以下论文内容进行分析：\n\n" + context if language == "zh" \
                   else "Please analyze the following paper:\n\n" + context
 
+    config = get_config()
+    llm = get_llm_client(config)
+    messages = [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=user_prompt),
+    ]
+
+    pieces: list = []
+    used_llm = True
     try:
-        config = get_config()
-        llm = get_llm_client(config)
-        messages = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=user_prompt),
-        ]
-        response = llm.invoke(messages)
-        markdown = response.content
-        used_llm = True
-        logger.info(f"LLM分析完成: {len(markdown)}字符")
+        try:
+            for chunk in llm.stream(messages):
+                text = getattr(chunk, "content", None)
+                if not text:
+                    continue
+                pieces.append(text)
+                yield {"type": "token", "text": text}
+        except (NotImplementedError, AttributeError, TypeError) as e:
+            # provider 不支持 stream：降级一次性返回
+            logger.warning(f"llm.stream 不支持 ({e})，降级 invoke")
+            response = llm.invoke(messages)
+            text = response.content
+            pieces.append(text)
+            yield {"type": "token", "text": text}
     except Exception as e:
         logger.error(f"LLM调用失败: {e}")
-        # 降级到基础分析（基于解析内容）
         markdown = _fallback_analysis(parsed, mode, language)
         used_llm = False
+        pieces.append(markdown)
+
+    markdown = "".join(pieces)
+    logger.info(f"LLM分析完成: {len(markdown)}字符")
 
     result = {
         "markdown": markdown,
@@ -508,11 +530,44 @@ def analyze_paper(
         "from_cache": False,
     }
 
-    # 保存结果（仅当LLM成功调用时才缓存，fallback结果不缓存）
     if used_llm:
         save_result(paper_id, mode, language, result)
 
-    return result
+    yield {"type": "complete", "result": result}
+
+
+def analyze_paper(
+    pdf_path: str,
+    paper_id: str,
+    mode: str = "snap",
+    language: str = "zh",
+    use_cache: bool = True,
+) -> Dict[str, Any]:
+    """
+    分析论文（非流式，内部委托 analyze_paper_stream 聚合）。
+
+    保留给 tests/ 与同步调用路径；SSE 端点应直接消费 analyze_paper_stream。
+
+    Args:
+        pdf_path: PDF文件路径（绝对路径）
+        paper_id: 论文ID
+        mode: 阅读模式 (snap/lens/sphere/qa)
+        language: 输出语言 (zh/en)
+        use_cache: 是否使用缓存（默认True，重复分析直接读缓存）
+
+    Returns:
+        dict with markdown and json fields
+    """
+    for event in analyze_paper_stream(pdf_path, paper_id, mode, language, use_cache):
+        etype = event.get("type")
+        if etype == "cache_hit":
+            return event["result"]
+        if etype == "complete":
+            return event["result"]
+        if etype == "error":
+            return event["result"]
+    # 不应到达
+    return {"markdown": "", "json": "{}", "from_cache": False}
 
 
 def _fallback_analysis(parsed: ParsedPaper, mode: str, language: str) -> str:

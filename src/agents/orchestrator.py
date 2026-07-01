@@ -24,6 +24,10 @@ class IntentType(str, Enum):
     NEW_RESEARCH = "new_research"   # 新研究主题（兼容旧值，等价于 full_research）
     FULL_RESEARCH = "full_research"  # 完整调研 + 生成综述
     SEARCH = "search"               # 检索 + 下载论文（不生成综述）
+    # 子任务：只生成对应章节，由 Orchestrator 直连生成器，不走工作流
+    GENERATE_ABSTRACT = "generate_abstract"
+    GENERATE_INTRODUCTION = "generate_introduction"
+    GENERATE_CONCLUSION = "generate_conclusion"
     CLARIFICATION = "clarification" # 需要澄清
     HELP = "help"                   # 帮助请求
     UNKNOWN = "unknown"             # 未知
@@ -101,6 +105,9 @@ class OrchestratorAgent(BaseAgent):
             RecognizedIntent.KNOWLEDGE_QUERY: IntentType.KNOWLEDGE_QUERY,
             RecognizedIntent.FULL_RESEARCH: IntentType.FULL_RESEARCH,
             RecognizedIntent.SEARCH: IntentType.SEARCH,
+            RecognizedIntent.GENERATE_ABSTRACT: IntentType.GENERATE_ABSTRACT,
+            RecognizedIntent.GENERATE_INTRODUCTION: IntentType.GENERATE_INTRODUCTION,
+            RecognizedIntent.GENERATE_CONCLUSION: IntentType.GENERATE_CONCLUSION,
             RecognizedIntent.CLARIFICATION: IntentType.CLARIFICATION,
             RecognizedIntent.HELP: IntentType.HELP,
             RecognizedIntent.UNKNOWN: IntentType.UNKNOWN,
@@ -273,6 +280,33 @@ class OrchestratorAgent(BaseAgent):
             result["action"] = "start_workflow"
             result["requires_workflow"] = True
             result["workflow_mode"] = "search"
+
+        elif intent_result.intent == IntentType.GENERATE_ABSTRACT:
+            # 子任务：只生成摘要，不触发工作流
+            topic = intent_result.extracted_topic or user_message
+            result["response"] = f"好的，我将为您生成摘要，请稍候..."
+            result["research_topic"] = topic
+            result["action"] = "generate_abstract"
+            result["requires_workflow"] = False
+            result["workflow_mode"] = "none"
+
+        elif intent_result.intent == IntentType.GENERATE_INTRODUCTION:
+            # 子任务：只生成引言，不触发工作流
+            topic = intent_result.extracted_topic or user_message
+            result["response"] = f"好的，我将为您生成引言，请稍候..."
+            result["research_topic"] = topic
+            result["action"] = "generate_introduction"
+            result["requires_workflow"] = False
+            result["workflow_mode"] = "none"
+
+        elif intent_result.intent == IntentType.GENERATE_CONCLUSION:
+            # 子任务：只生成结论/总结，不触发工作流
+            topic = intent_result.extracted_topic or user_message
+            result["response"] = f"好的，我将为您生成结论，请稍候..."
+            result["research_topic"] = topic
+            result["action"] = "generate_conclusion"
+            result["requires_workflow"] = False
+            result["workflow_mode"] = "none"
 
         elif intent_result.intent == IntentType.CLARIFICATION:
             # 需要澄清
