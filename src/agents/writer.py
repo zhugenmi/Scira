@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from config.settings import get_config, get_llm_client, SciraConfig
+from src.utils.logger import record_token_usage
 from src.agents.prompts import (
     WRITER_OUTLINE_PROMPT,
     WRITER_SECTION_PROMPT,
@@ -106,6 +107,7 @@ class WriterAgent:
         ]
 
         response = self.llm.invoke(messages)
+        record_token_usage(response, self.config.model.model_name or "gpt-4o")
         return self._parse_outline(response.content, topic)
 
     def _parse_outline(self, response: str, topic: str) -> PaperOutline:
@@ -243,6 +245,7 @@ class WriterAgent:
             ]
 
             content = self.llm.invoke(messages)
+            record_token_usage(content, self.config.model.model_name or "gpt-4o")
 
             section.content = content.content if hasattr(content, 'content') else str(content)
             section.word_count = len(section.content.split())
@@ -326,6 +329,7 @@ Output ONLY the section content.
 
             try:
                 content = self.llm.invoke(messages)
+                record_token_usage(content, self.config.model.model_name or "gpt-4o")
                 section.content = content
                 section.word_count = len(content.split())
                 section.status = "completed"

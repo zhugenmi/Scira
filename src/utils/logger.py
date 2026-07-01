@@ -11,7 +11,7 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 # Loguru
 from loguru import logger
@@ -139,6 +139,11 @@ class TokenTracker:
         "claude-3-opus": {"input": 15.0, "output": 75.0},
         "claude-3-sonnet": {"input": 3.0, "output": 15.0},
         "claude-3-haiku": {"input": 0.25, "output": 1.25},
+        # Volcengine doubao-seed-2.0-lite — ESTIMATE, verify against official
+        # pricing page. Lite models are cheap; these values prevent the unknown
+        # model from falling back to gpt-4o pricing ($5/$15) which would
+        # overstate cost by ~50x.
+        "doubao-seed-2-0-lite-260215": {"input": 0.07, "output": 0.21},
     }
 
     def __init__(self, model_name: str = "gpt-4o"):
@@ -153,14 +158,18 @@ class TokenTracker:
         self.total_output_tokens += output_tokens
         self.request_count += 1
 
+    def _pricing(self) -> dict:
+        """Resolve pricing for the current model, falling back to gpt-4o."""
+        return self.PRICING.get(self.model_name, {"input": 5.0, "output": 15.0})
+
     def get_input_cost(self) -> float:
         """Calculate input cost in USD."""
-        pricing = self.PRICING.get(self.model_name, {"input": 5.0, "output": 15.0})
+        pricing = self._pricing()
         return (self.total_input_tokens / 1_000_000) * pricing["input"]
 
     def get_output_cost(self) -> float:
         """Calculate output cost in USD."""
-        pricing = self.PRICING.get(self.model_name, {"input": 5.0, "output": 15.0})
+        pricing = self._pricing()
         return (self.total_output_tokens / 1_000_000) * pricing["output"]
 
     def get_total_cost(self) -> float:
@@ -204,3 +213,22 @@ def reset_token_tracker():
     """Reset the token tracker."""
     global _token_tracker
     _token_tracker = None
+
+
+def record_token_usage(response: Any, model_name: str = "gpt-4o") -> None:
+    """
+    Extract usage_metadata from a LangChain LLM response and feed the global
+    TokenTracker. Safe to call on any response object; no-ops if usage_metadata
+    is absent. Used by BaseAgent and by standalone agents (e.g. RetrievalAgent)
+    that call llm.invoke directly without going through BaseAgent.invoke.
+    """
+    try:
+        um = getattr(response, "usage_metadata", None)
+        if not um:
+            return
+        in_tok = int(um.get("input_tokens", 0) or 0)
+        out_tok = int(um.get("output_tokens", 0) or 0)
+        if in_tok or out_tok:
+            get_token_tracker(model_name).add_usage(in_tok, out_tok)
+    except Exception as e:
+        logger.debug(f"token usage tracking skipped: {e}")

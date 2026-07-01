@@ -15,6 +15,7 @@ from enum import Enum
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from config.settings import get_config, get_llm_client, SciraConfig
+from src.utils.logger import record_token_usage
 from src.agents.prompts import (
     ANALYZER_CLUSTER_PROMPT,
     ANALYZER_COMPARE_PROMPT,
@@ -135,6 +136,7 @@ class AnalyzerAgent:
         ]
 
         response = self.llm.invoke(messages)
+        record_token_usage(response, self.config.model.model_name or "gpt-4o")
         return self._parse_clusters(response.content, papers)
 
     def _parse_clusters(self, response: str, papers: List[Dict]) -> List[PaperCluster]:
@@ -213,6 +215,7 @@ class AnalyzerAgent:
         ]
 
         response = self.llm.invoke(messages)
+        record_token_usage(response, self.config.model.model_name or "gpt-4o")
         return self._parse_method_comparison(response.content)
 
     def _parse_method_comparison(self, response: str) -> List[Dict[str, str]]:
@@ -259,6 +262,7 @@ class AnalyzerAgent:
         ]
 
         response = self.llm.invoke(messages)
+        record_token_usage(response, self.config.model.model_name or "gpt-4o")
         return self._parse_global_knowledge(response.content)
 
     def _parse_global_knowledge(self, response: str) -> GlobalKnowledge:

@@ -14,6 +14,7 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from config.settings import get_config, get_llm_client, SciraConfig
+from src.utils.logger import record_token_usage, logger
 
 
 class BaseAgent(ABC):
@@ -46,6 +47,17 @@ class BaseAgent(ABC):
         self.config = config or get_config()
         self.llm = get_llm_client(self.config)
 
+    def _record_token_usage(self, response: Any) -> None:
+        """
+        Extract usage_metadata from an LLM response and feed the global TokenTracker.
+
+        LangChain AIMessage exposes `usage_metadata` (a dict with input_tokens /
+        output_tokens / total_tokens) for providers that return usage info.
+        Without this, token_usage in GraphState stays at zero forever.
+        """
+        model_name = self.config.model.model_name or "gpt-4o"
+        record_token_usage(response, model_name)
+
     def invoke(
         self,
         prompt: str,
@@ -72,6 +84,7 @@ class BaseAgent(ABC):
         ]
 
         response = self.llm.invoke(chat_messages, **kwargs)
+        self._record_token_usage(response)
         return response.content
 
     def invoke_with_json(
@@ -138,6 +151,7 @@ class BaseAgent(ABC):
         ]
 
         response = self.llm.invoke(chat_messages)
+        self._record_token_usage(response)
         return parser.parse(response.content)
 
 

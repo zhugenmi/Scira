@@ -18,7 +18,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate
 
 from config.settings import get_config, SciraConfig
-from src.utils.logger import logger
+from src.utils.logger import logger, record_token_usage
 from src.agents.prompts import (
     RETRIEVAL_TRANSLATE_PROMPT,
     RETRIEVAL_ANALYZE_PROMPT,
@@ -100,6 +100,7 @@ class RetrievalAgent:
                 HumanMessage(content=translate_prompt)
             ]
             translate_response = llm.invoke(translate_messages)
+            record_token_usage(translate_response, self.config.model.model_name or "gpt-4o")
             query_to_analyze = translate_response.content.strip()
             query_to_analyze = query_to_analyze.strip('"').strip("'")
 
@@ -114,6 +115,7 @@ class RetrievalAgent:
         ]
 
         response = llm.invoke(messages)
+        record_token_usage(response, self.config.model.model_name or "gpt-4o")
         result = self._parse_json_response(response.content)
 
         # Store original query for reference

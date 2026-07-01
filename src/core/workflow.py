@@ -175,6 +175,7 @@ from src.utils.logger import (
     logger,
     setup_logging,
     get_token_tracker,
+    reset_token_tracker,
     TokenTracker,
 )
 
@@ -311,6 +312,33 @@ def track_token_usage(state: GraphState, input_tokens: int = 0, output_tokens: i
         )
 
 
+def sync_token_usage_to_state(state: GraphState) -> None:
+    """
+    Flush the global TokenTracker's accumulated usage into GraphState.
+
+    Agents feed the global tracker via BaseAgent._record_token_usage on every
+    LLM call. The tracker is process-global (not per-workflow), so this sync
+    must be called at least once at the end of the workflow to materialize the
+    totals into state — otherwise state["token_usage"] stays at the zero values
+    written by init_state and the final summary log / eval script report $0.
+
+    Safe to call multiple times; each call overwrites state with the latest
+    tracker totals.
+    """
+    try:
+        model_name = os.getenv("LLM_MODEL_NAME", "gpt-4o")
+        tracker = get_token_tracker(model_name)
+        summary = tracker.get_summary()
+        state["token_usage"] = {
+            "total_input_tokens": summary["total_input_tokens"],
+            "total_output_tokens": summary["total_output_tokens"],
+            "request_count": summary["request_count"],
+            "estimated_cost_usd": summary["estimated_cost_usd"],
+        }
+    except Exception as e:
+        logger.debug(f"sync_token_usage_to_state failed: {e}")
+
+
 # ==================== Node Functions ====================
 
 @traceable(name="init_state")
@@ -401,6 +429,9 @@ def init_state(state: GraphState) -> GraphState:
         "request_count": 0,
         "estimated_cost_usd": 0.0,
     }
+    # Reset the global token tracker so repeated workflow runs in the same
+    # process don't accumulate across runs.
+    reset_token_tracker()
 
     # Default values
     if "auto_approve" not in state:
@@ -1030,6 +1061,10 @@ def revision_node(state: GraphState) -> GraphState:
             f"Abstract: {len(state.get('abstract', ''))} chars"
         )
 
+        # Flush accumulated token usage from the global tracker into state
+        # before logging the summary, so the final report reflects real usage.
+        sync_token_usage_to_state(state)
+
         # Log token usage summary
         token_usage = state.get("token_usage", {})
         if token_usage:
@@ -1303,6 +1338,9 @@ def run_workflow(
     finally:
         _clear_progress_callback()
 
+    # Flush token usage regardless of which exit path the graph took
+    # (search mode ends after retrieval; full mode pauses at download approval).
+    sync_token_usage_to_state(final_state)
     return final_state
 
 
@@ -1365,6 +1403,7 @@ def run_download_and_rest(
         if workflow_mode == "search":
             # search 模式：下载完成即结束，不生成综述
             logger.info("workflow_mode=search, done after download")
+            sync_token_usage_to_state(state)
             return state
 
         # full 模式：手动串联后续节点
@@ -1373,6 +1412,7 @@ def run_download_and_rest(
         state = outline_node(state)
         state = writing_node(state)
         state = revision_node(state)
+        sync_token_usage_to_state(state)
         return state
     finally:
         _clear_progress_callback()

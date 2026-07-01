@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from config.settings import get_config, get_llm_client, SciraConfig
+from src.utils.logger import record_token_usage
 from src.agents.prompts import (
     REVIEW_FEEDBACK_PROMPT,
     REVIEWER_SYSTEM,
@@ -128,6 +129,7 @@ class ReviewerAgent:
         ]
 
         response = self.llm.invoke(messages)
+        record_token_usage(response, self.config.model.model_name or "gpt-4o")
         return self._parse_review(response.content)
 
     def _parse_review(self, response: str) -> RevisionFeedback:
@@ -204,6 +206,7 @@ class ReviewerAgent:
         ]
 
         abstract = self.llm.invoke(messages)
+        record_token_usage(abstract, self.config.model.model_name or "gpt-4o")
         return abstract.content.strip()
 
     def generate_introduction(
@@ -245,6 +248,7 @@ class ReviewerAgent:
         ]
 
         introduction = self.llm.invoke(messages)
+        record_token_usage(introduction, self.config.model.model_name or "gpt-4o")
         return introduction.content.strip()
 
     def generate_conclusion(
@@ -286,6 +290,7 @@ class ReviewerAgent:
         ]
 
         conclusion = self.llm.invoke(messages)
+        record_token_usage(conclusion, self.config.model.model_name or "gpt-4o")
         return conclusion.content.strip()
 
     def generate_front_matter(
