@@ -137,3 +137,82 @@ def test_reader_agent_paper_callback_invoked(monkeypatch):
     pids = {e[0] for e in events}
     assert pids == {"p1", "p2"}
     assert all(e[1] == "success" for e in events if e[1] == "success")
+
+
+def test_run_download_and_rest_emits_per_paper_events(monkeypatch, tmp_path):
+    """run_download_and_rest 把 paper_callback 转成 _emit_progress('download', details={'per_paper':...})."""
+    from src.core import workflow as wf
+    from src.agents.reader import ReaderAgent, ReadingResult
+
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    def fake_emit(phase, progress=None, message=None, details=None):
+        if phase == "download" and details and details.get("per_paper"):
+            events.append((phase, details["per_paper"]))
+
+    monkeypatch.setattr(wf, "_emit_progress", fake_emit)
+
+    # Mock ReaderAgent.run：直接产出 literature_data，并触发回调
+    def fake_run(self, papers, max_workers=None, download_dir=None):
+        for p in papers:
+            if self.paper_callback:
+                self.paper_callback(p["paper_id"], "success", None)
+        return ReadingResult(
+            tasks=[], total_papers=len(papers), completed=len(papers), failed=0,
+            literature_data=[{"paper_id": p["paper_id"]} for p in papers],
+            reading_summary={"failed_papers": []},
+        )
+
+    monkeypatch.setattr(ReaderAgent, "run", fake_run)
+
+    state = {
+        "workflow_mode": "search", "current_category": "diffusion",
+        "pdfs_dir": str(tmp_path), "literature_data": [], "reading_errors": [],
+        "pending_download_papers": [], "download_approval": "pending",
+        "human_approvals": {}, "error_messages": [], "retry_count": 0,
+        "run_id": None,
+    }
+    selected = [
+        {"paper_id": "p1"}, {"paper_id": "p2"},
+    ]
+    wf.run_download_and_rest(state, selected, progress_callback=lambda *a, **k: None)
+
+    pids = {e[1]["paper_id"] for e in events}
+    assert pids == {"p1", "p2"}
+    assert all(e[1]["status"] == "success" for e in events)
+
+
+def test_run_download_and_rest_short_circuits_on_empty(monkeypatch, tmp_path):
+    """全部下载失败（literature_data 为空）时，full 模式不进入 reading_node。"""
+    from src.core import workflow as wf
+    from src.agents.reader import ReaderAgent, ReadingResult
+
+    reading_called = []
+
+    def fake_reading_node(state):
+        reading_called.append(True)
+        return state
+
+    monkeypatch.setattr(wf, "reading_node", fake_reading_node)
+
+    def fake_run(self, papers, max_workers=None, download_dir=None):
+        for p in papers:
+            if self.paper_callback:
+                self.paper_callback(p["paper_id"], "failed", "403")
+        return ReadingResult(
+            tasks=[], total_papers=len(papers), completed=0, failed=len(papers),
+            literature_data=[], reading_summary={"failed_papers": [{"paper_id": p["paper_id"], "error": "403"} for p in papers]},
+        )
+
+    monkeypatch.setattr(ReaderAgent, "run", fake_run)
+
+    state = {
+        "workflow_mode": "full", "current_category": "diffusion",
+        "pdfs_dir": str(tmp_path), "literature_data": [], "reading_errors": [],
+        "pending_download_papers": [], "download_approval": "pending",
+        "human_approvals": {}, "error_messages": [], "retry_count": 0,
+        "run_id": None,
+    }
+    wf.run_download_and_rest(state, [{"paper_id": "p1"}], progress_callback=lambda *a, **k: None)
+
+    assert reading_called == [], "literature_data 为空时不应进入 reading_node"

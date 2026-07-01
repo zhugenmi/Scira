@@ -1480,7 +1480,20 @@ def run_download_and_rest(
                     "papers_downloading": len(selected_papers),
                 },
             )
-            agent = ReaderAgent(max_workers=4)
+
+            def _paper_cb(paper_id: str, status: str, error: Optional[str] = None):
+                _emit_progress(
+                    "download",
+                    details={
+                        "per_paper": {
+                            "paper_id": paper_id,
+                            "status": status,
+                            "error": error,
+                        }
+                    },
+                )
+
+            agent = ReaderAgent(max_workers=4, paper_callback=_paper_cb)
             download_result = agent.run(selected_papers, download_dir=str(pdfs_dir))
             logger.info(
                 f"PDF download completed: {download_result.completed}/{download_result.total_papers}"
@@ -1505,6 +1518,12 @@ def run_download_and_rest(
         if workflow_mode == "search":
             # search 模式：下载完成即结束，不生成综述
             logger.info("workflow_mode=search, done after download")
+            sync_token_usage_to_state(state)
+            return state
+
+        # 空材料短路：全部下载失败时不进入后续节点
+        if not state.get("literature_data"):
+            logger.warning("No literature_data after download, short-circuit before reading_node")
             sync_token_usage_to_state(state)
             return state
 
