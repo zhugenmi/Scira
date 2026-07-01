@@ -206,6 +206,12 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
                 status: 'approved',
               }
             }
+            // 还原大纲/写作/审查卡片（折叠态）
+            if (m.role === 'assistant') {
+              if (meta.outline_card) m.outlineCard = { ...meta.outline_card, expanded: false }
+              if (meta.writing_card) m.writingCard = { ...meta.writing_card, expanded: false }
+              if (meta.review_card) m.reviewCard = { ...meta.review_card, expanded: false }
+            }
             return m
           })
           setMessages([{
