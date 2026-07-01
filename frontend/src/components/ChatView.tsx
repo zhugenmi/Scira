@@ -7,6 +7,9 @@ import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
 import PaperSelectionModal from './PaperSelectionModal'
+import { OutlineCard } from './cards/OutlineCard'
+import { WritingCard } from './cards/WritingCard'
+import { ReviewCard } from './cards/ReviewCard'
 
 interface RetrievalConditions {
   task_id?: string
@@ -1190,6 +1193,31 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
                   onSubmit={(ids, targetCat, newName) => {
                     handleApproveDownload(message.id, message.downloadApproval!.taskId, ids, targetCat, newName)
                   }}
+                />
+              )}
+
+              {message.role === 'assistant' && message.outlineCard && (
+                <OutlineCard
+                  data={message.outlineCard}
+                  onToggle={() => setMessages(prev => prev.map(m =>
+                    m.id === message.id ? { ...m, outlineCard: { ...m.outlineCard!, expanded: !m.outlineCard!.expanded } } : m
+                  ))}
+                />
+              )}
+              {message.role === 'assistant' && message.writingCard && (
+                <WritingCard
+                  data={message.writingCard}
+                  onToggle={() => setMessages(prev => prev.map(m =>
+                    m.id === message.id ? { ...m, writingCard: { ...m.writingCard!, expanded: !m.writingCard!.expanded } } : m
+                  ))}
+                />
+              )}
+              {message.role === 'assistant' && message.reviewCard && (
+                <ReviewCard
+                  data={message.reviewCard}
+                  onToggle={() => setMessages(prev => prev.map(m =>
+                    m.id === message.id ? { ...m, reviewCard: { ...m.reviewCard!, expanded: !m.reviewCard!.expanded } } : m
+                  ))}
                 />
               )}
 
