@@ -60,6 +60,22 @@ export interface DownloadApproval {
   error?: string
 }
 
+interface OutlineCardData {
+  title?: string
+  sections?: { section_id?: string; title?: string; key_points?: string[] }[]
+  expanded?: boolean
+}
+interface WritingCardData {
+  content: string
+  done: boolean
+  expanded?: boolean
+}
+interface ReviewCardData {
+  revision_feedback?: string
+  final_review?: string
+  expanded?: boolean
+}
+
 interface Message {
   id: string
   role: 'user' | 'assistant' | 'system'
@@ -68,6 +84,9 @@ interface Message {
   workflowStatus?: string
   approval?: Approval
   downloadApproval?: DownloadApproval
+  outlineCard?: OutlineCardData
+  writingCard?: WritingCardData
+  reviewCard?: ReviewCardData
 }
 
 interface Session {
@@ -310,6 +329,67 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
             ))
             break
 
+          case 'outline_result':
+            setMessages(prev => prev.map(msg =>
+              msg.id === assistantMessageId
+                ? { ...msg, outlineCard: { ...(data.data || {}), expanded: true } }
+                : msg
+            ))
+            fetch(`/api/chat/session/${sessionId}/card`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ card_type: 'outline', payload: data.data || {} }),
+            }).catch(() => {})
+            break
+
+          case 'writing_token':
+            setMessages(prev => prev.map(msg =>
+              msg.id === assistantMessageId
+                ? {
+                    ...msg,
+                    writingCard: {
+                      content: (msg.writingCard?.content || '') + (data.data?.token || ''),
+                      done: false,
+                      expanded: true,
+                    },
+                  }
+                : msg
+            ))
+            break
+
+          case 'writing_done':
+            setMessages(prev => prev.map(msg =>
+              msg.id === assistantMessageId
+                ? {
+                    ...msg,
+                    writingCard: {
+                      content: data.data?.paper_content || msg.writingCard?.content || '',
+                      done: true,
+                      expanded: true,
+                    },
+                  }
+                : msg
+            ))
+            fetch(`/api/chat/session/${sessionId}/card`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ card_type: 'writing', payload: { content: data.data?.paper_content || '', done: true } }),
+            }).catch(() => {})
+            break
+
+          case 'review_result':
+            setMessages(prev => prev.map(msg =>
+              msg.id === assistantMessageId
+                ? { ...msg, reviewCard: { ...(data.data || {}), expanded: true } }
+                : msg
+            ))
+            fetch(`/api/chat/session/${sessionId}/card`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ card_type: 'review', payload: data.data || {} }),
+            }).catch(() => {})
+            break
+
           case 'paper_download_approval_request': {
             const papers: PendingPaper[] = (data.data?.papers || []).map((p: any) => ({
               ...p,
@@ -362,9 +442,13 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
                   : `已完成检索并下载 ${papersDownloaded} 篇论文，您可以在"知识库"页面查看。`
               }
             } else {
-              completeText = topic
-                ? `已完成对「${topic}」的研究！您可以在"生成论文"页面查看生成的报告。`
-                : '研究任务已完成！您可以在"生成论文"页面查看生成的报告。'
+              if (data.data?.final_report) {
+                completeText = data.data.final_report
+              } else {
+                completeText = topic
+                  ? `已完成对「${topic}」的研究！您可以在"生成论文"页面查看生成的报告。`
+                  : '研究任务已完成！您可以在"生成论文"页面查看生成的报告。'
+              }
             }
             setMessages(prev => prev.map(msg =>
               msg.id === assistantMessageId
