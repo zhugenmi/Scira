@@ -1473,25 +1473,37 @@ def run_download_and_rest(
         if selected_papers:
             from src.agents.reader import ReaderAgent
 
+            _total_to_download = len(selected_papers)
+            _completed_count = {"n": 0}
+
             _emit_progress(
                 "retrieval_download",
                 details={
-                    "papers_to_download": len(selected_papers),
-                    "papers_downloading": len(selected_papers),
+                    "papers_to_download": _total_to_download,
+                    "papers_downloading": 0,
+                    "current_downloading": "",
                 },
             )
 
-            def _paper_cb(paper_id: str, status: str, error: Optional[str] = None):
-                _emit_progress(
-                    "download",
-                    details={
-                        "per_paper": {
-                            "paper_id": paper_id,
-                            "status": status,
-                            "error": error,
-                        }
-                    },
-                )
+            def _paper_cb(paper_id: str, status: str, error: Optional[str] = None, title: Optional[str] = None):
+                if status == "downloading":
+                    _emit_progress(
+                        "download",
+                        details={
+                            "per_paper": {"paper_id": paper_id, "status": status, "error": error},
+                            "current_downloading": title or paper_id,
+                        },
+                    )
+                else:  # success / failed
+                    _completed_count["n"] += 1
+                    _emit_progress(
+                        "download",
+                        details={
+                            "per_paper": {"paper_id": paper_id, "status": status, "error": error},
+                            "papers_downloading": _completed_count["n"],
+                            "current_downloading": "",
+                        },
+                    )
 
             agent = ReaderAgent(max_workers=4, paper_callback=_paper_cb)
             download_result = agent.run(selected_papers, download_dir=str(pdfs_dir))

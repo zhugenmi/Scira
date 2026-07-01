@@ -175,8 +175,9 @@ class ReaderAgent:
             config: Scira config
             backend: PDF parsing backend
             max_workers: Max parallel workers
-            paper_callback: 可选回调 (paper_id, status, error)，status ∈
-                {"downloading","success","failed"}。每篇下载完成/失败时调用。
+            paper_callback: 可选回调 (paper_id, status, error, title)，status ∈
+                {"downloading","success","failed"}。下载开始/完成/失败时调用。
+                title 为论文标题，用于前端显示"正在下载：xxx"。
         """
         self.config = config or get_config()
         self.backend = backend
@@ -421,6 +422,11 @@ class ReaderAgent:
             Fully processed task
         """
         # Download with custom directory
+        if self.paper_callback:
+            try:
+                self.paper_callback(task.paper_id, "downloading", None, task.title)
+            except Exception:
+                pass
         task = self.download_paper(task, download_dir=download_dir)
         if task.status == "failed":
             return task
@@ -517,7 +523,7 @@ Word Count: {content.get('word_count', 0)}
         def _emit(task: ReadingTask, status: str, error: Optional[str] = None):
             if self.paper_callback:
                 try:
-                    self.paper_callback(task.paper_id, status, error)
+                    self.paper_callback(task.paper_id, status, error, task.title)
                 except Exception:
                     pass
 
