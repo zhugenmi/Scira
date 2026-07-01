@@ -1,10 +1,25 @@
-import { Search, Settings, User, Bell } from 'lucide-react'
+import { Search, Settings, User, Bell, Sun, Moon, Monitor } from 'lucide-react'
+import { useTheme, type Theme } from '../theme/ThemeProvider'
 
 interface HeaderProps {
   // 可以添加 props 如 onSearch 等
 }
 
+const THEME_ICON: Record<Theme, typeof Sun> = {
+  light: Sun,
+  dark: Moon,
+  system: Monitor,
+}
+const THEME_LABEL: Record<Theme, string> = {
+  light: '亮色',
+  dark: '暗色',
+  system: '跟随系统',
+}
+
 export default function Header({}: HeaderProps) {
+  const { theme, cycleTheme } = useTheme()
+  const ThemeIcon = THEME_ICON[theme]
+
   return (
     <header className="h-14 bg-dark-surface/80 backdrop-blur-sm border-b border-dark-border flex items-center justify-between px-4 shrink-0">
       {/* 左侧 Logo */}
@@ -39,6 +54,13 @@ export default function Header({}: HeaderProps) {
 
       {/* 右侧操作区 */}
       <div className="flex items-center gap-2">
+        <button
+          onClick={cycleTheme}
+          title={`主题：${THEME_LABEL[theme]}（点击切换）`}
+          className="p-2 rounded-lg hover:bg-dark-border/50 transition-colors text-dark-muted hover:text-dark-text"
+        >
+          <ThemeIcon className="w-5 h-5" />
+        </button>
         <button className="p-2 rounded-lg hover:bg-dark-border/50 transition-colors text-dark-muted hover:text-dark-text">
           <Bell className="w-5 h-5" />
         </button>

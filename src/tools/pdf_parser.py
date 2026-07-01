@@ -108,7 +108,12 @@ class PDFParser:
 
         # Extract metadata
         metadata = doc.metadata
-        title = metadata.get("title") or self._extract_title_from_first_page(doc)
+        # 优先用字号分析提取标题；PDF info dict 的 title 常为文件名或空，仅作兜底
+        title = self._extract_title_from_first_page(doc)
+        if title == "Unknown":
+            meta_title = (metadata.get("title") or "").strip()
+            if meta_title and "_" not in meta_title and not re.search(r"\.pdf$", meta_title, re.I):
+                title = meta_title
         authors = self._extract_authors(doc)
 
         # Extract text
@@ -161,13 +166,38 @@ class PDFParser:
 
         # Extract metadata
         metadata = reader.metadata or {}
-        title = metadata.get("/Title") or "Unknown"
-        authors = metadata.get("/Author", "").split(", ")
+        # 优先用 info dict，但 info 里的 title 常为文件名，需校验
+        meta_title = (metadata.get("/Title") or "").strip()
+        meta_author = (metadata.get("/Author") or "").strip()
 
         # Extract text
         all_text = ""
         for page in reader.pages:
             all_text += page.extract_text() or ""
+
+        # 标题：info dict 的 title 若不像文件名则用之，否则文本启发式
+        def _looks_like_filename(t: str) -> bool:
+            return bool(t) and (
+                "_" in t or
+                re.search(r"\.pdf$", t, re.I) or
+                re.fullmatch(r"[\d_\- ]+", t)
+            )
+
+        if meta_title and not _looks_like_filename(meta_title):
+            title = meta_title
+        else:
+            lines = [ln.strip() for ln in all_text.split("\n") if ln.strip()]
+            title = "Unknown"
+            for ln in lines[:8]:
+                if len(ln) > 10 and not ln.isupper() and "@" not in ln:
+                    title = ln
+                    break
+
+        # 作者：info dict 优先，否则文本启发式
+        if meta_author and "@" not in meta_author:
+            authors = [a.strip() for a in re.split(r"[,;]", meta_author) if a.strip()]
+        else:
+            authors = self._extract_authors_from_text(all_text)
 
         # Extract abstract
         abstract = self._extract_abstract(all_text)
@@ -202,45 +232,181 @@ class PDFParser:
         )
 
     def _extract_title_from_first_page(self, doc) -> str:
-        """Extract title from first page text."""
+        """Extract title from first page using font-size analysis.
+
+        标题通常是首页字号最大的文本块。用 get_text("dict") 拿到 span 级别的
+        字号信息，按字号分组，取最大字号对应的连续 span 拼接。过滤会议横幅、
+        arXiv 预印本标记、邮箱等噪声。
+        """
         if len(doc) == 0:
             return "Unknown"
 
         first_page = doc[0]
+        try:
+            page_dict = first_page.get_text("dict")
+        except Exception:
+            page_dict = None
+
+        if page_dict:
+            spans = []
+            for block in page_dict.get("blocks", []):
+                if block.get("type") != 0:  # 0 = 文本块
+                    continue
+                for line in block.get("lines", []):
+                    for span in line.get("spans", []):
+                        text = (span.get("text") or "").strip()
+                        if not text:
+                            continue
+                        spans.append({
+                            "text": text,
+                            "size": round(span.get("size", 0), 1),
+                            "flags": span.get("flags", 0),
+                        })
+            if spans:
+                # 跳过明显噪声行
+                noise_markers = (
+                    "@", "arxiv", "arxiv:", "preprint", "submitted to",
+                    "vol.", "volume", "proceedings of", "ieee", "acm",
+                    "doi:", "http", "www.", ".org", ".edu",
+                )
+                def _is_noise(t: str) -> bool:
+                    tl = t.lower()
+                    if any(m in tl for m in noise_markers):
+                        return True
+                    # 纯数字或纯日期
+                    if re.fullmatch(r"[\d\s/\-:.]+", t):
+                        return True
+                    # 太短
+                    if len(t) < 5:
+                        return True
+                    return False
+
+                candidates = [s for s in spans if not _is_noise(s["text"])]
+                if candidates:
+                    max_size = max(s["size"] for s in candidates)
+                    # 容差 0.5：同一标题不同 span 字号可能略差
+                    top = [s for s in candidates if s["size"] >= max_size - 0.5]
+                    # 按 y 位置已天然有序（spans 顺序即阅读顺序），直接拼接
+                    title = " ".join(s["text"] for s in top)
+                    title = re.sub(r"\s+", " ", title).strip()
+                    # 去掉尾部多余标点
+                    title = title.rstrip(".,;:")
+                    if len(title) >= 5:
+                        return title
+
+        # 兜底：纯文本启发式（pypdf 路径或 dict 失败时）
         text = first_page.get_text()
-
-        lines = text.split("\n")
-        for line in lines[:5]:
-            line = line.strip()
-            if len(line) > 10 and not line.isupper():
+        lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+        for line in lines[:8]:
+            if len(line) > 10 and not line.isupper() and "@" not in line:
                 return line
-
         return "Unknown"
 
     def _extract_authors(self, doc) -> List[str]:
-        """Extract authors from metadata or text."""
-        metadata = doc.metadata
-        authors_str = metadata.get("author", "")
+        """Extract authors from metadata or first-page text heuristics.
 
-        if authors_str:
-            return [a.strip() for a in authors_str.split(",")]
+        多数 PDF 的 info dict 里 author 字段为空或为机构名。先用 metadata，
+        再在首页标题与摘要之间找作者行：含多个逗号分隔的 capitalized token、
+        无数字（年份除外）、无 @ 的行最可能是作者列表。
+        """
+        metadata = doc.metadata or {}
+        authors_str = (metadata.get("author") or "").strip()
+        if authors_str and "@" not in authors_str:
+            authors = [a.strip() for a in re.split(r"[,;]", authors_str) if a.strip()]
+            if authors:
+                return authors
 
+        if len(doc) == 0:
+            return []
+        return self._extract_authors_from_text(doc[0].get_text())
+
+    def _extract_authors_from_text(self, text: str) -> List[str]:
+        """从首页纯文本里启发式抽取作者列表（pypdf 路径共用）。"""
+        lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+        # 在标题之后、摘要之前找候选作者行
+        abstract_idx = -1
+        for i, ln in enumerate(lines):
+            if re.match(r"^(Abstract|ABSTRACT|摘\s*要|Summary)\b", ln):
+                abstract_idx = i
+                break
+        search_end = abstract_idx if abstract_idx > 0 else min(len(lines), 12)
+        # 标题一般在第 1-3 行，作者在其下方
+        start = 1 if len(lines) > 1 else 0
+
+        for ln in lines[start:search_end]:
+            # 跳过含 @ / 纯数字 / arXiv 标记 / 机构关键词
+            low = ln.lower()
+            if "@" in ln or "arxiv" in low or "preprint" in low:
+                continue
+            if "university" in low or "institute" in low or "department" in low:
+                continue
+            if "abstract" in low or "摘" in ln:
+                continue
+            # 作者行：含至少一个逗号、token 多为 capitalized、数字占比低
+            if "," not in ln and " and " not in ln.lower():
+                continue
+            # 剥离机构标注符号
+            cleaned = re.sub(r"[†*†‡\d]", "", ln)
+            # 按逗号/分号/and 分割
+            parts = re.split(r"[,;]|\band\b", cleaned)
+            names = [p.strip() for p in parts if p.strip()]
+            # 校验：每个 name 至少 2 字符、首字母大写或中文
+            def _looks_like_name(n: str) -> bool:
+                if len(n) < 2:
+                    return False
+                if re.search(r"[一-龥]", n):
+                    return True
+                # 英文名：首字母大写
+                return bool(re.match(r"^[A-Z][A-Za-z.\-'\s]+$", n))
+
+            names = [n for n in names if _looks_like_name(n)]
+            if len(names) >= 1:
+                return names[:20]
         return []
 
     def _extract_abstract(self, text: str) -> str:
-        """Extract abstract from paper text."""
-        # Common abstract patterns
-        patterns = [
-            r"(?:Abstract|BSTRACT)[:\s]*(.{100,2000}?)(?:\n\n|Introduction|I\. |\n1\.)",
-            r"Abstract\.?\s*(.{100,2000}?)(?:\n\n|1\.|Introduction)",
+        """Extract abstract from paper text with extended boundary patterns."""
+        # 起始标记：Abstract / ABSTRACT / 摘 要 / 摘要 / Summary
+        # 结束标记：Keywords / Index Terms / 1. Introduction / 1 Introduction /
+        #          I. Introduction / 1 章节号 / 连续两空行
+        start_patterns = [
+            r"(?:^|\n)\s*(?:Abstract|ABSTRACT)\s*[:\.。\—\-—]?\s*",
+            r"(?:^|\n)\s*摘\s*要\s*[:：]?\s*",
+            r"(?:^|\n)\s*Summary\s*[:\.]?\s*",
+        ]
+        end_patterns = [
+            r"\n\s*Keywords?\s*[:：]",
+            r"\n\s*Index\s+Terms",
+            r"\n\s*(?:1\.?\s*)?Introduction\s*[\.\n]",
+            r"\n\s*1\s+Introduction\b",
+            r"\n\s*I\.\s+Introduction\b",
+            r"\n\s*1\.\s+[A-Z]",   # "1. Methodology"
+            r"\n\s*Key\s+words",
+            r"\n{2,}\s*[1Ⅰ]\s",     # 章节号
+            r"\n\s*引\s*言",
         ]
 
-        for pattern in patterns:
-            match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
-            if match:
-                abstract = match.group(1).strip()
-                return self._clean_text(abstract)
-
+        for sp in start_patterns:
+            sm = re.search(sp, text)
+            if not sm:
+                continue
+            start = sm.end()
+            # 从 start 起截取片段找结束标记
+            tail = text[start:start + 4000]
+            end_idx = len(tail)
+            for ep in end_patterns:
+                em = re.search(ep, tail)
+                if em and em.start() < end_idx:
+                    end_idx = em.start()
+            abstract = tail[:end_idx].strip()
+            # 清理：去掉首尾多余空白、连字符
+            abstract = re.sub(r"\s+", " ", abstract).strip()
+            abstract = abstract.strip("—-")
+            if 100 <= len(abstract) <= 4000:
+                return abstract
+            # 长度不合适但非空，放宽下限
+            if 30 <= len(abstract) < 100:
+                return abstract
         return ""
 
     def _extract_sections(self, text: str) -> Dict[str, str]:

@@ -2,13 +2,23 @@
 @tailwind components;
 @tailwind utilities;
 
+/* 亮色（默认 :root）— RGB 三元组配合 tailwind <alpha-value> */
 :root {
   --color-primary: #0ea5e9;
-  --color-bg: #0f1419;
-  --color-surface: #1a1f2e;
-  --color-border: #2d3548;
-  --color-text: #e7e9ea;
-  --color-muted: #8b98a5;
+  --color-bg: 248 250 252;
+  --color-surface: 255 255 255;
+  --color-border: 226 232 240;
+  --color-text: 15 23 42;
+  --color-muted: 100 116 139;
+}
+
+/* 暗色 — <html class="dark"> 时生效 */
+.dark {
+  --color-bg: 15 20 25;
+  --color-surface: 26 31 46;
+  --color-border: 45 53 72;
+  --color-text: 231 233 234;
+  --color-muted: 139 152 165;
 }
 
 * {
@@ -20,8 +30,8 @@
 html, body, #root {
   height: 100%;
   font-family: 'Noto Sans SC', system-ui, sans-serif;
-  background-color: var(--color-bg);
-  color: var(--color-text);
+  background-color: rgb(var(--color-bg));
+  color: rgb(var(--color-text));
 }
 
 /* 自定义滚动条 */
@@ -35,12 +45,12 @@ html, body, #root {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--color-border);
+  background: rgb(var(--color-border));
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-muted);
+  background: rgb(var(--color-muted));
 }
 
 /* 纸张纹理背景 */
@@ -102,4 +112,11 @@ html, body, #root {
 
 .paper-card:hover {
   @apply shadow-lg shadow-primary-500/5;
+}
+
+/* 亮色模式下抑制深色阴影，避免卡片悬浮过重 */
+:root:not(.dark) .card-hover:hover {
+  box-shadow:
+    0 4px 20px rgba(0, 0, 0, 0.08),
+    0 0 0 1px rgba(14, 165, 233, 0.2);
 }

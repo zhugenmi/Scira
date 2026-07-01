@@ -1,5 +1,6 @@
 /** @type {import('tailwindcss').Config} */
 export default {
+  darkMode: 'class',
   content: [
     "./index.html",
     "./src/**/*.{js,ts,jsx,tsx}",
@@ -20,12 +21,15 @@ export default {
           900: '#0c4a6e',
           950: '#082f49',
         },
+        // 'dark.*' 调色板映射到 CSS 变量，由 <html class="dark"> 切换亮/暗。
+        // 保留 'dark' 命名以避免全站 ~400 处 bg-dark-*/text-dark-* 改名。
+        // 值用 RGB 三元组 + <alpha-value> 以支持 /50 /30 等透明度修饰符。
         dark: {
-          bg: '#0f1419',
-          surface: '#1a1f2e',
-          border: '#2d3548',
-          text: '#e7e9ea',
-          muted: '#8b98a5',
+          bg: 'rgb(var(--color-bg) / <alpha-value>)',
+          surface: 'rgb(var(--color-surface) / <alpha-value>)',
+          border: 'rgb(var(--color-border) / <alpha-value>)',
+          text: 'rgb(var(--color-text) / <alpha-value>)',
+          muted: 'rgb(var(--color-muted) / <alpha-value>)',
         }
       },
       fontFamily: {

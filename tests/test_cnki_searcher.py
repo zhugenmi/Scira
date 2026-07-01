@@ -97,14 +97,63 @@ def _fake_mcp_text_result(payload: dict):
 
 
 @pytest.mark.asyncio
+async def test_cnki_searcher_search_tears_down_client_per_call():
+    """Each async_search call must start AND stop its own MCP client.
+
+    Regression: previously async_search reused a long-lived self._client
+    across calls, but the sync wrapper uses asyncio.run() which destroys
+    the event loop each call. The MCP SDK's stdio_client uses anyio
+    cancel scopes (task-bound), so leaving the session open across the
+    asyncio.run boundary raised:
+        RuntimeError: Attempted to exit cancel scope in a different task
+        than it was entered in
+    during loop.shutdown_asyncgens(). Fix: per-call lifecycle.
+    """
+    from src.mcp.paper_search_mcp.academic_platforms import cnki as cnki_mod
+
+    fake_client = AsyncMock()
+    fake_client.is_running = False  # so _ensure_client path starts it
+    fake_client.start = AsyncMock(return_value=True)
+    fake_client.call_tool = AsyncMock(return_value=_fake_mcp_text_result({"papers": []}))
+
+    with patch.object(cnki_mod, "MCPStdioClient", return_value=fake_client):
+        searcher = cnki_mod.CnkiSearcher()
+        await searcher.async_search("anything", max_results=5)
+
+    fake_client.start.assert_awaited_once()
+    fake_client.call_tool.assert_awaited_once()
+    fake_client.stop.assert_awaited_once()
+    # No leftover client state on the searcher instance.
+    assert not hasattr(searcher, "_client") or searcher._client is None
+
+
+@pytest.mark.asyncio
+async def test_cnki_searcher_search_tears_down_client_on_error():
+    """If call_tool fails (returns None per MCPStdioClient contract), the
+    per-call client is still stopped."""
+    from src.mcp.paper_search_mcp.academic_platforms import cnki as cnki_mod
+
+    fake_client = AsyncMock()
+    fake_client.is_running = False
+    fake_client.start = AsyncMock(return_value=True)
+    fake_client.call_tool = AsyncMock(return_value=None)  # failure, no raise
+    fake_client.stop = AsyncMock()
+
+    with patch.object(cnki_mod, "MCPStdioClient", return_value=fake_client):
+        searcher = cnki_mod.CnkiSearcher()
+        papers = await searcher.async_search("anything", max_results=5)
+
+    assert papers == []
+    fake_client.stop.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_cnki_searcher_search_parses_papers():
     """CnkiSearcher.search calls search_cnki_papers via MCP and parses results."""
-    from src.mcp.paper_search_mcp.academic_platforms.cnki import CnkiSearcher
+    from src.mcp.paper_search_mcp.academic_platforms import cnki as cnki_mod
 
-    searcher = CnkiSearcher()
-    # Pre-stub the internal client so start() succeeds without a real subprocess.
     fake_client = AsyncMock()
-    fake_client.is_running = True
+    fake_client.is_running = False
     fake_client.start = AsyncMock(return_value=True)
     fake_client.call_tool = AsyncMock(return_value=_fake_mcp_text_result({
         "papers": [
@@ -119,9 +168,12 @@ async def test_cnki_searcher_search_parses_papers():
         ],
         "total": 1,
     }))
-    searcher._client = fake_client
+    fake_client.stop = AsyncMock()
 
-    papers = await searcher.async_search("深度学习 医学", max_results=5)
+    with patch.object(cnki_mod, "MCPStdioClient", return_value=fake_client):
+        searcher = cnki_mod.CnkiSearcher()
+        papers = await searcher.async_search("深度学习 医学", max_results=5)
+
     assert len(papers) == 1
     p = papers[0]
     assert p.title == "深度学习医学影像综述"
@@ -129,37 +181,42 @@ async def test_cnki_searcher_search_parses_papers():
     assert p.source == "cnki"
     assert p.pdf_url == ""  # href stored in extra, not pdf_url
     assert p.extra.get("cnki_href") == "/detail/123"
+    fake_client.stop.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_cnki_searcher_search_client_down_returns_empty():
     """If the MCP client won't start, search returns []."""
-    from src.mcp.paper_search_mcp.academic_platforms.cnki import CnkiSearcher
+    from src.mcp.paper_search_mcp.academic_platforms import cnki as cnki_mod
 
-    searcher = CnkiSearcher()
     fake_client = AsyncMock()
     fake_client.is_running = False
     fake_client.start = AsyncMock(return_value=False)
-    searcher._client = fake_client
+    fake_client.stop = AsyncMock()
 
-    papers = await searcher.async_search("anything", max_results=5)
+    with patch.object(cnki_mod, "MCPStdioClient", return_value=fake_client):
+        searcher = cnki_mod.CnkiSearcher()
+        papers = await searcher.async_search("anything", max_results=5)
     assert papers == []
+    fake_client.stop.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_cnki_searcher_search_tool_returns_none_returns_empty():
     """If call_tool returns None (session died), search returns []."""
-    from src.mcp.paper_search_mcp.academic_platforms.cnki import CnkiSearcher
+    from src.mcp.paper_search_mcp.academic_platforms import cnki as cnki_mod
 
-    searcher = CnkiSearcher()
     fake_client = AsyncMock()
-    fake_client.is_running = True
+    fake_client.is_running = False
     fake_client.start = AsyncMock(return_value=True)
     fake_client.call_tool = AsyncMock(return_value=None)
-    searcher._client = fake_client
+    fake_client.stop = AsyncMock()
 
-    papers = await searcher.async_search("anything", max_results=5)
+    with patch.object(cnki_mod, "MCPStdioClient", return_value=fake_client):
+        searcher = cnki_mod.CnkiSearcher()
+        papers = await searcher.async_search("anything", max_results=5)
     assert papers == []
+    fake_client.stop.assert_awaited_once()
 
 
 def test_cnki_searcher_not_enabled_when_env_unset():
