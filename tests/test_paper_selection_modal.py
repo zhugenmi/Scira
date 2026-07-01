@@ -125,7 +125,7 @@ def test_reader_agent_paper_callback_invoked(monkeypatch):
     monkeypatch.setattr(ReaderAgent, "process_task", fake_process_task)
 
     agent = ReaderAgent(
-        paper_callback=lambda pid, st, err: events.append((pid, st, err))
+        paper_callback=lambda pid, st, err, title=None: events.append((pid, st, err))
     )
     papers = [
         {"paper_id": "p1", "title": "T1", "authors": [], "abstract": "", "pdf_url": "http://x/1.pdf"},
@@ -235,6 +235,7 @@ def test_progress_callback_enqueues_per_paper_events():
 
     q = workflow_tasks[task_id]["event_queue"]
     assert len(q) == 2
-    assert q[0]["paper_id"] == "p1" and q[0]["status"] == "success"
-    assert q[1]["paper_id"] == "p2" and q[1]["status"] == "failed"
+    # 事件以 {key: payload} 形式入队，per_paper 事件包在 "per_paper" key 下
+    assert q[0]["per_paper"]["paper_id"] == "p1" and q[0]["per_paper"]["status"] == "success"
+    assert q[1]["per_paper"]["paper_id"] == "p2" and q[1]["per_paper"]["status"] == "failed"
 
