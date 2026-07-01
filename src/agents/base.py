@@ -87,6 +87,41 @@ class BaseAgent(ABC):
         self._record_token_usage(response)
         return response.content
 
+    def invoke_stream(
+        self,
+        prompt: str,
+        messages: Optional[List[Any]] = None,
+        token_callback: Optional[Callable[[str], None]] = None,
+        **kwargs,
+    ) -> str:
+        """
+        Invoke the agent with streaming, calling token_callback for each chunk.
+
+        Args:
+            prompt: User prompt
+            messages: Optional additional messages
+            token_callback: Called with each text chunk as it arrives
+            **kwargs: Additional LLM parameters
+
+        Returns:
+            Full concatenated response string
+        """
+        messages = messages or []
+        chat_messages = [
+            SystemMessage(content=self.system_prompt),
+            *messages,
+            HumanMessage(content=prompt),
+        ]
+
+        chunks = []
+        for chunk in self.llm.stream(chat_messages, **kwargs):
+            content = chunk.content if hasattr(chunk, 'content') else str(chunk)
+            chunks.append(content)
+            if token_callback and content:
+                token_callback(content)
+
+        return "".join(chunks)
+
     def invoke_with_json(
         self,
         prompt: str,
