@@ -16,6 +16,9 @@ import requests
 from pathlib import Path
 from dotenv import load_dotenv
 
+# 整个文件需要后端服务运行（python -m src.mcp.server），标记为 integration 默认跳过。
+pytestmark = pytest.mark.integration
+
 # Load environment variables
 PROJECT_ROOT = Path(__file__).parent.parent
 load_dotenv(PROJECT_ROOT / ".env")

@@ -13,17 +13,23 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-# Add MCP project to path
-MCP_PATH = PROJECT_ROOT / "src" / "mcp" / "paper-search-mcp"
-sys.path.insert(0, str(MCP_PATH))
+# Add MCP project to path (目录名是下划线 paper_search_mcp，非连字符)
+MCP_PATH = PROJECT_ROOT / "src" / "mcp" / "paper_search_mcp"
+sys.path.insert(0, str(MCP_PATH.parent))
 
 # Load environment variables
 from dotenv import load_dotenv
 load_dotenv(PROJECT_ROOT / ".env")
 
 
+@pytest.mark.integration
 class TestMCPSearch:
-    """Test MCP paper search functionality."""
+    """Test MCP paper search functionality.
+
+    Integration tests — require real network access to arXiv / Semantic Scholar /
+    PubMed. Skipped by default; run with `pytest --run-integration` or
+    `pytest -m integration`.
+    """
 
     def test_search_arxiv(self):
         """Test arXiv search."""
@@ -73,8 +79,12 @@ class TestMCPSearch:
         print(f"\nPubMed search returned {len(results)} papers")
 
 
+@pytest.mark.integration
 class TestMCPDownload:
-    """Test MCP paper download functionality."""
+    """Test MCP paper download functionality.
+
+    Integration tests — require real arXiv PDF downloads. Skipped by default.
+    """
 
     def test_download_arxiv_pdf(self):
         """Test arXiv PDF download."""
@@ -124,8 +134,12 @@ class TestMCPDownload:
             print(f"\nDownload failed (expected if paper doesn't exist): {e}")
 
 
+@pytest.mark.integration
 class TestMCPPaperRead:
-    """Test MCP paper reading functionality."""
+    """Test MCP paper reading functionality.
+
+    Integration tests — require real arXiv PDF download + parse. Skipped by default.
+    """
 
     def test_read_arxiv_paper(self):
         """Test reading arXiv paper content."""
