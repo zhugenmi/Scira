@@ -1036,6 +1036,8 @@ def outline_node(state: GraphState) -> GraphState:
         )
         logger.debug(f"Outline title: {outline.title}")
 
+        _emit_progress("outline_result", details={"outline_result": state["outline"]})
+
     except Exception as e:
         logger.error(f"Outline generation failed: {e}")
         state["error_messages"].append(f"Outline generation failed: {e}")
@@ -1066,11 +1068,15 @@ def writing_node(state: GraphState) -> GraphState:
 
         agent = WriterAgent()
 
+        def _on_token(section_id: str, section_title: str, token: str):
+            _emit_progress("writing_token", details={"writing_token": {"token": token, "section_id": section_id, "section_title": section_title}})
+
         result = agent.run(
             global_knowledge=state.get("global_knowledge", {}),
             topic=topic,
             literature_clusters=state.get("literature_clusters", []),
             reference_list=reference_list,
+            stream_callback=_on_token,
         )
 
         gs_format = agent.to_graphstate_format(result)
@@ -1084,6 +1090,8 @@ def writing_node(state: GraphState) -> GraphState:
 
         if result.failed_sections > 0:
             logger.warning(f"Failed to write {result.failed_sections} sections")
+
+        _emit_progress("writing_done", details={"writing_done": {"paper_content": state.get("final_paper", "")}})
 
     except Exception as e:
         logger.error(f"Writing failed: {e}")
@@ -1137,6 +1145,11 @@ def revision_node(state: GraphState) -> GraphState:
             if "## 参考文献" not in final_review:
                 final_review = final_review.rstrip() + "\n\n" + bibliography
         state["final_review"] = final_review
+
+        _emit_progress("review_result", details={"review_result": {
+            "revision_feedback": state.get("revision_feedback", ""),
+            "final_review": state.get("final_review", ""),
+        }})
 
         # Update phase to final
         state["current_phase"] = PipelinePhase.FINAL
