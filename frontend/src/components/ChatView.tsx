@@ -36,6 +36,15 @@ interface PendingPaper {
   published_date: string
   abstract: string
   pdf_url: string
+  source: string
+  has_pdf_link: boolean
+}
+
+type PaperDownloadStatus = 'pending' | 'downloading' | 'success' | 'failed'
+
+interface PaperStatusEntry {
+  status: PaperDownloadStatus
+  error?: string
 }
 
 interface DownloadApproval {
@@ -43,6 +52,10 @@ interface DownloadApproval {
   papers: PendingPaper[]
   status: 'pending' | 'submitting' | 'approved' | 'rejected'
   selectedIds: string[]
+  matchedCategory: string
+  existingCategories: string[]
+  submitted: boolean
+  paperStatus: Record<string, PaperStatusEntry>
   error?: string
 }
 
@@ -255,13 +268,29 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
             ))
             break
 
-          case 'download':
+          case 'download': {
+            // per-paper 事件：data.data.paper_id 存在时更新 paperStatus
+            const pid = data.data?.paper_id
+            const pstatus = data.data?.paper_status
+            if (pid && pstatus) {
+              setMessages(prev => prev.map(msg => {
+                if (!msg.downloadApproval) return msg
+                const ps = { ...msg.downloadApproval.paperStatus }
+                ps[pid] = {
+                  status: pstatus as PaperDownloadStatus,
+                  error: data.data?.error || undefined,
+                }
+                return { ...msg, downloadApproval: { ...msg.downloadApproval, paperStatus: ps } }
+              }))
+            }
+            // 同时更新顶层 workflowStatus 文本（计数事件）
             setMessages(prev => prev.map(msg =>
               msg.id === assistantMessageId
                 ? { ...msg, workflowStatus: data.data?.message || '下载论文中...' }
                 : msg
             ))
             break
+          }
 
           case 'reading':
             setMessages(prev => prev.map(msg =>
@@ -280,8 +309,15 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
             break
 
           case 'paper_download_approval_request': {
-            // 检索完成，渲染论文下载确认卡片，等用户勾选
-            const papers: PendingPaper[] = data.data?.papers || []
+            const papers: PendingPaper[] = (data.data?.papers || []).map((p: any) => ({
+              ...p,
+              source: p.source || 'unknown',
+              has_pdf_link: !!p.has_pdf_link,
+            }))
+            const matchedCategory: string = data.data?.matched_category || ''
+            const existingCategories: string[] = data.data?.existing_categories || []
+            const initialStatus: Record<string, PaperStatusEntry> = {}
+            papers.forEach(p => { initialStatus[p.paper_id] = { status: 'pending' } })
             setMessages(prev => prev.map(msg =>
               msg.id === assistantMessageId
                 ? {
@@ -292,6 +328,10 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
                       papers,
                       status: 'pending',
                       selectedIds: papers.map(p => p.paper_id),
+                      matchedCategory,
+                      existingCategories,
+                      submitted: false,
+                      paperStatus: initialStatus,
                     },
                   }
                 : msg
@@ -707,17 +747,30 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
   }
 
   // 确认下载：提交勾选的 paper_id，后端执行下载 + 后续节点
-  const handleApproveDownload = async (assistantMessageId: string, taskId: string, selectedIds: string[]) => {
+  const handleApproveDownload = async (
+    assistantMessageId: string,
+    taskId: string,
+    selectedIds: string[],
+    targetCategory?: string,
+    newCategoryName?: string,
+  ) => {
     setMessages(prev => prev.map(m =>
       m.id === assistantMessageId && m.downloadApproval
-        ? { ...m, downloadApproval: { ...m.downloadApproval!, status: 'submitting', error: undefined }, workflowStatus: `开始下载 ${selectedIds.length} 篇论文...` }
+        ? { ...m, downloadApproval: { ...m.downloadApproval!, status: 'submitting', error: undefined, submitted: true }, workflowStatus: `开始下载 ${selectedIds.length} 篇论文...` }
         : m
     ))
     try {
       const res = await fetch('/api/workflow/approve-download', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ task_id: taskId, decision: 'approve', selected_paper_ids: selectedIds, session_id: sessionId || undefined }),
+        body: JSON.stringify({
+          task_id: taskId,
+          decision: 'approve',
+          selected_paper_ids: selectedIds,
+          target_category: targetCategory,
+          new_category_name: newCategoryName,
+          session_id: sessionId || undefined,
+        }),
       })
       const data = await res.json().catch(() => ({}))
       if (res.ok && (data.status === 'running' || data.status === 'completed')) {
@@ -731,14 +784,14 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
       } else {
         setMessages(prev => prev.map(m =>
           m.id === assistantMessageId && m.downloadApproval
-            ? { ...m, downloadApproval: { ...m.downloadApproval!, status: 'pending', error: data.detail || '提交失败' } }
+            ? { ...m, downloadApproval: { ...m.downloadApproval!, status: 'pending', submitted: false, error: data.detail || '提交失败' } }
             : m
         ))
       }
     } catch (e) {
       setMessages(prev => prev.map(m =>
         m.id === assistantMessageId && m.downloadApproval
-          ? { ...m, downloadApproval: { ...m.downloadApproval!, status: 'pending', error: '网络错误' } }
+          ? { ...m, downloadApproval: { ...m.downloadApproval!, status: 'pending', submitted: false, error: '网络错误' } }
           : m
       ))
     }
