@@ -125,12 +125,17 @@ export default function PaperReading() {
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault()
     const files = e.dataTransfer.files
-    if (files && files.length > 0 && files[0].type === 'application/pdf') {
+    const ok = files && files.length > 0 && (
+      files[0].type === 'application/pdf' ||
+      files[0].name.toLowerCase().endsWith('.pdf') ||
+      files[0].name.toLowerCase().endsWith('.caj')
+    )
+    if (ok) {
       setFile(files[0])
       setSelectedPaper(null)
       setError(null)
     } else {
-      setError('请选择PDF文件')
+      setError('请选择 PDF 或 CAJ 文件')
     }
   }
 
@@ -158,7 +163,7 @@ export default function PaperReading() {
       const data = await response.json()
       setSelectedPaper({
         paper_id: data.paper_id,
-        title: data.title || file.name.replace('.pdf', ''),
+        title: data.title || file.name.replace(/\.(pdf|caj)$/i, ''),
         authors: data.authors || [],
         pdf_path: data.pdf_path
       })
@@ -519,9 +524,9 @@ export default function PaperReading() {
                 onDrop={handleDrop}
                 onClick={() => fileInputRef.current?.click()}
               >
-                <input ref={fileInputRef} type="file" accept=".pdf" onChange={handleFileChange} className="hidden" />
+                <input ref={fileInputRef} type="file" accept=".pdf,.caj" onChange={handleFileChange} className="hidden" />
                 <Upload className="w-12 h-12 text-dark-muted mb-4" />
-                <p className="text-dark-muted mb-2">点击选择PDF或拖拽文件到此处</p>
+                <p className="text-dark-muted mb-2">点击选择 PDF / CAJ 或拖拽文件到此处</p>
                 {file && (
                   <>
                     <div className="flex items-center gap-2 mt-2">

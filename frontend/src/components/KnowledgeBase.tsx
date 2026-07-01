@@ -551,7 +551,7 @@ export default function KnowledgeBase({ onReadPaper }: KnowledgeBaseProps) {
                   <div className="p-3 space-y-2">
                     <div className="flex bg-dark-bg rounded-lg p-0.5">
                       <button onClick={() => setAddMode('pdf')} className={`flex-1 px-2 py-1 rounded-md text-xs font-medium transition-colors ${addMode === 'pdf' ? 'bg-dark-surface text-dark-text shadow-sm' : 'text-dark-muted hover:text-dark-text'}`}>
-                        <Upload className="w-3 h-3 inline mr-1" />上传PDF
+                        <Upload className="w-3 h-3 inline mr-1" />上传文件
                       </button>
                       <button onClick={() => setAddMode('citation')} className={`flex-1 px-2 py-1 rounded-md text-xs font-medium transition-colors ${addMode === 'citation' ? 'bg-dark-surface text-dark-text shadow-sm' : 'text-dark-muted hover:text-dark-text'}`}>
                         <Type className="w-3 h-3 inline mr-1" />导入引用
@@ -559,9 +559,9 @@ export default function KnowledgeBase({ onReadPaper }: KnowledgeBaseProps) {
                     </div>
                     {addMode === 'pdf' ? (
                       <div>
-                        <input ref={fileInputRef} type="file" accept=".pdf" onChange={handleUploadPdf} className="hidden" />
+                        <input ref={fileInputRef} type="file" accept=".pdf,.caj" onChange={handleUploadPdf} className="hidden" />
                         <button onClick={() => fileInputRef.current?.click()} disabled={submitting} className="w-full py-2 border-2 border-dashed border-dark-border rounded-lg text-xs text-dark-muted hover:border-primary-500/50 hover:text-primary-400 transition-colors disabled:opacity-50">
-                          {submitting ? '导入中...' : '点击选择 PDF 文件'}
+                          {submitting ? '导入中...' : '点击选择 PDF / CAJ 文件'}
                         </button>
                       </div>
                     ) : (
@@ -675,7 +675,7 @@ export default function KnowledgeBase({ onReadPaper }: KnowledgeBaseProps) {
                       {fetching ? '获取中...' : '获取论文'}
                       <ChevronDown className="w-3 h-3" />
                     </button>
-                    <input ref={uploadPdfRef} type="file" accept=".pdf" onChange={handleUploadPdfAttach} className="hidden" />
+                    <input ref={uploadPdfRef} type="file" accept=".pdf,.caj" onChange={handleUploadPdfAttach} className="hidden" />
                     {fetchMenuOpen && (
                       <div className="absolute right-0 top-full mt-1 w-40 bg-dark-surface border border-dark-border rounded-lg shadow-lg z-20 overflow-hidden">
                         <button onClick={handleFetchOnline} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-dark-text hover:bg-dark-border/30 transition-colors">

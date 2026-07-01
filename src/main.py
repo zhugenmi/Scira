@@ -11,6 +11,13 @@ import os
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# 初始化日志系统（幂等，honors LOG_LEVEL/LOG_FORMAT/LOG_VERBOSE env）
+from src.utils.logger import setup_logging
+setup_logging(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    verbose=os.getenv("LOG_VERBOSE") == "1",
+)
+
 import argparse
 import json
 from datetime import datetime

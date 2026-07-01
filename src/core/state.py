@@ -167,6 +167,8 @@ class GraphState(TypedDict):
     # Metadata
     created_at: Optional[str]
     updated_at: Optional[str]
+    # 工作流运行 ID，用于跨节点日志关联（与 contextvars run_id 同步）
+    run_id: Optional[str]
 
 
 # Type aliases for easier usage

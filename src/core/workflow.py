@@ -170,7 +170,9 @@ def format_bibliography(reference_list: List[Dict[str, Any]]) -> str:
 # Import state
 from src.core.state import GraphState, PipelinePhase, ApprovalStatus
 
-# Import logging and token tracking
+# Import logging and token tracking. setup_logging is idempotent and already
+# runs at logger.py import time (honors LOG_LEVEL / LOG_VERBOSE env); the
+# explicit call here is kept as a documentation anchor.
 from src.utils.logger import (
     logger,
     setup_logging,
@@ -178,9 +180,12 @@ from src.utils.logger import (
     reset_token_tracker,
     TokenTracker,
 )
+from src.utils.context import new_run_id, set_run_id, get_current_run_id
+from src.utils.metrics import get_registry
 
-# Initialize logging
-setup_logging(level="INFO", verbose=False)
+setup_logging()
+
+_metrics = get_registry()
 
 
 # ==================== Helper Functions ====================
@@ -412,6 +417,11 @@ def _match_existing_category(
 
 def init_state(state: GraphState) -> GraphState:
     """Initialize the state with user query."""
+    # 生成 run_id 并同步到 contextvars，使后续所有日志行带同一 run_id
+    run_id = state.get("run_id") or new_run_id()
+    set_run_id(run_id)
+    state["run_id"] = run_id
+
     logger.info("=" * 50)
     logger.info("Starting Scira Workflow")
     logger.info(f"User query: {state.get('user_query', 'N/A')}")
@@ -442,6 +452,7 @@ def init_state(state: GraphState) -> GraphState:
 
 
 @traceable(name="retrieval_node")
+@_metrics.time("workflow_phase_duration_seconds", labels={"phase": "retrieval"})
 def retrieval_node(state: GraphState) -> GraphState:
     """Retrieval agent node - search for papers."""
     logger.info(">>> Entering RETRIEVAL node")
@@ -822,6 +833,7 @@ def retrieval_node(state: GraphState) -> GraphState:
 
 
 @traceable(name="reading_node")
+@_metrics.time("workflow_phase_duration_seconds", labels={"phase": "reading"})
 def reading_node(state: GraphState) -> GraphState:
     """Reader agent node - parse downloaded PDFs (downloaded in retrieval_node)."""
     logger.info(">>> Entering READING node")
@@ -875,6 +887,7 @@ def reading_node(state: GraphState) -> GraphState:
 
 
 @traceable(name="analysis_node")
+@_metrics.time("workflow_phase_duration_seconds", labels={"phase": "analysis"})
 def analysis_node(state: GraphState) -> GraphState:
     """Analyzer agent node - cluster and synthesize."""
     logger.info(">>> Entering ANALYSIS node")
@@ -913,6 +926,7 @@ def analysis_node(state: GraphState) -> GraphState:
 
 
 @traceable(name="outline_node")
+@_metrics.time("workflow_phase_duration_seconds", labels={"phase": "outline"})
 def outline_node(state: GraphState) -> GraphState:
     """Writer agent node - generate outline."""
     logger.info(">>> Entering OUTLINE node")
@@ -964,6 +978,7 @@ def outline_node(state: GraphState) -> GraphState:
 
 
 @traceable(name="writing_node")
+@_metrics.time("workflow_phase_duration_seconds", labels={"phase": "writing"})
 def writing_node(state: GraphState) -> GraphState:
     """Writer agent node - write sections."""
     logger.info(">>> Entering WRITING node")
@@ -1012,6 +1027,7 @@ def writing_node(state: GraphState) -> GraphState:
 
 
 @traceable(name="revision_node")
+@_metrics.time("workflow_phase_duration_seconds", labels={"phase": "revision"})
 def revision_node(state: GraphState) -> GraphState:
     """Reviewer agent node - review and finalize."""
     logger.info(">>> Entering REVISION node")
@@ -1301,6 +1317,9 @@ def run_workflow(
         Final state with results
     """
     workflow_mode = (workflow_mode or "full").strip().lower()
+    # 生成 run_id 并 set contextvar，使本工作流所有日志/metrics 可关联
+    run_id = new_run_id()
+    set_run_id(run_id)
     logger.info(
         f"Starting workflow | Query: {user_query} | Auto-approve: {auto_approve} | Mode: {workflow_mode}"
     )
@@ -1315,6 +1334,7 @@ def run_workflow(
         "current_phase": PipelinePhase.INIT,
         "error_messages": [],
         "retry_count": 0,
+        "run_id": run_id,
         **kwargs,
     }
 
@@ -1324,6 +1344,8 @@ def run_workflow(
     # Run with config
     config = {"recursion_limit": 100}
 
+    _metrics.counter("workflow_started_total").inc()
+    _metrics.gauge("workflow_active").inc()
     # 注册进度回调（线程本地），供各节点 _emit_progress 推送阶段
     _set_progress_callback(progress_callback)
     try:
@@ -1335,12 +1357,18 @@ def run_workflow(
         # run_download_and_rest 因此回退到 general 目录下载 PDF。实时阶段更新由各节点内
         # _emit_progress 经线程本地回调推送，不依赖 stream。
         final_state = app.invoke(initial_state, config)
+    except Exception:
+        _metrics.counter("errors_total").inc({"component": "workflow"})
+        _metrics.counter("workflow_completed_total").inc(labels={"status": "failed"})
+        raise
     finally:
         _clear_progress_callback()
+        _metrics.gauge("workflow_active").dec()
 
     # Flush token usage regardless of which exit path the graph took
     # (search mode ends after retrieval; full mode pauses at download approval).
     sync_token_usage_to_state(final_state)
+    _metrics.counter("workflow_completed_total").inc(labels={"status": "success"})
     return final_state
 
 
@@ -1358,6 +1386,10 @@ def run_download_and_rest(
     3. full 模式：依次执行 reading → analysis → outline → writing → revision 节点
     """
     logger.info(f">>> run_download_and_rest: {len(selected_papers)} papers to download")
+    # 恢复 run_id 上下文（state 来自前一次 run_workflow 的暂停点）
+    rid = state.get("run_id")
+    if rid:
+        set_run_id(rid)
     _set_progress_callback(progress_callback)
     try:
         pdfs_dir = state.get("pdfs_dir")
@@ -1436,7 +1468,9 @@ def run_workflow_stream(
         "current_phase": PipelinePhase.INIT,
         "error_messages": [],
         "retry_count": 0,
+        "run_id": new_run_id(),
     }
+    set_run_id(initial_state["run_id"])
 
     app = create_workflow()
     config = {"recursion_limit": 100}

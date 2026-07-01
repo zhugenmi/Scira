@@ -16,6 +16,13 @@ from src.tools.pdf_parser import (
     extract_key_info,
 )
 
+# CAJ Parser
+from src.tools.caj_parser import (
+    CAJParseError,
+    convert_caj_to_pdf,
+    is_disguised_pdf,
+)
+
 # Format Utils
 from src.tools.format_utils import (
     CitationFormatter,
@@ -33,6 +40,10 @@ __all__ = [
     "ParsedPaper",
     "parse_pdf",
     "extract_key_info",
+    # CAJ Parser
+    "CAJParseError",
+    "convert_caj_to_pdf",
+    "is_disguised_pdf",
     # Format
     "CitationFormatter",
     "CitationStyle",
