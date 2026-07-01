@@ -19,6 +19,15 @@ RETRIEVAL_ANALYZE_PROMPT = """Analyze the following research query and provide:
    a boolean query against English-language academic databases, so Chinese
    terms would return no relevant results)
 3. Suggested research direction (exploratory/comparative/empirical)
+4. Domain — classify the query into exactly ONE of these fixed categories:
+   - computer_science  (CS, ML, AI, NLP, CV, systems, security, crypto, software)
+   - biology           (molecular, genetics, bioinformatics, ecology, neuroscience-bio)
+   - medical           (clinical, medicine, pharmacology, public health, healthcare)
+   - engineering       (transport, civil, mechanical, electrical, chemical engineering, materials)
+   - social_science    (economics, sociology, psychology, law, political science, education)
+   - humanities        (history, philosophy, literature, linguistics, arts)
+   - general           (only if genuinely cross-disciplinary or unclear)
+   Pick the single best fit. If unsure, use "general".
 
 Query: {query}
 
@@ -30,12 +39,13 @@ Important — keep these distinct research fields separate; do NOT conflate them
   not when it is about knowledge graphs.
 - Similarly keep "ontology", "knowledge representation" distinct from GNN.
 
-Output strictly in this JSON format (all string values in English):
+Output strictly in this JSON format (all string values in English, domain from the list above):
 {{
     "normalized_topic": "...",
     "key_concepts": ["...", "..."],
     "research_direction": "exploratory|comparative|empirical",
-    "background_context": "brief background in English"
+    "background_context": "brief background in English",
+    "domain": "computer_science|biology|medical|engineering|social_science|humanities|general"
 }}"""
 
 RETRIEVAL_APPROVAL_PROMPT = """用户请求的研究主题是：{user_query}

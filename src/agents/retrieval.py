@@ -118,6 +118,14 @@ class RetrievalAgent:
         record_token_usage(response, self.config.model.model_name or "gpt-4o")
         result = self._parse_json_response(response.content)
 
+        # Extract and validate domain (fixed 7-class enum). Invalid/missing → general.
+        from src.mcp.paper_search_mcp.domain_routing import VALID_DOMAINS
+        domain = str(result.get("domain", "")).strip()
+        if domain not in VALID_DOMAINS:
+            logger.warning(f"LLM returned invalid/missing domain='{domain}', falling back to 'general'")
+            domain = "general"
+        result["domain"] = domain
+
         # Store original query for reference
         if is_chinese:
             result["original_query"] = user_query
