@@ -141,3 +141,10 @@ def test_search_strategy_has_domain_and_has_chinese_fields():
     s = _make_strategy(domain="biology", has_chinese=True)
     assert s.domain == "biology"
     assert s.has_chinese is True
+
+
+def test_graphstate_has_domain_field():
+    """GraphState TypedDict must declare 'domain' or LangGraph silently drops it."""
+    from src.core.state import GraphState
+    # TypedDict.__annotations__ lists all declared fields.
+    assert "domain" in GraphState.__annotations__

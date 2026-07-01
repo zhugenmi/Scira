@@ -476,6 +476,7 @@ def retrieval_node(state: GraphState) -> GraphState:
 
         # Update state
         state["search_keywords"] = result.search_strategy.keywords
+        state["domain"] = result.search_strategy.domain
 
         # Handle both dict and object formats from MCP API
         state["search_results"] = []

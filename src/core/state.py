@@ -85,6 +85,10 @@ class GraphState(TypedDict):
     search_results: Optional[List[Dict[str, Any]]]  # Raw arXiv search results
     selected_papers: Optional[List[str]]  # Paper IDs selected for reading
 
+    # 领域分类（7-class enum 之一），由 retrieval_node 从 SearchStrategy 写入。
+    # 用于检索源路由；下游节点暂不消费，但需声明否则 LangGraph 会丢弃。
+    domain: Optional[str]
+
     # Human approval: Retrieval conditions
     retrieval_approval: Optional[str]  # ApprovalStatus value
 
