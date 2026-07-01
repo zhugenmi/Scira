@@ -218,11 +218,19 @@ class ReaderAgent:
         from src.utils.logger import logger
 
         mcp_api_base = os.getenv("MCP_API_BASE", "http://localhost:8001/api/paper-search")
-        # 优先使用传入的 download_dir，否则使用环境变量
-        target_dir = download_dir or os.getenv("PAPER_DOWNLOAD_DIR", "./data/downloads")
-        os.makedirs(target_dir, exist_ok=True)
-
+        # download_dir 语义：类别基目录（如 data/papers/<category>）。
+        # 每篇论文落到独立子目录 <base>/<safe_paper_id>/<safe_paper_id>.pdf，
+        # 便于与精读结果文档（snap/lens/sphere_*.json）同目录共存。
+        base_dir = download_dir or os.getenv("PAPER_DOWNLOAD_DIR", "./data/downloads")
         paper_id = task.paper_id or ""
+        # 规范化文件名：DOI 形如 10.64898/2026.05.18.725649 含 '/'，
+        # 直接拼会变成嵌套目录，统一替换为 '_'。
+        safe_paper_id = sanitize_paper_id_for_filename(paper_id) if paper_id else ""
+        if safe_paper_id:
+            target_dir = os.path.join(base_dir, safe_paper_id)
+        else:
+            target_dir = base_dir
+        os.makedirs(target_dir, exist_ok=True)
         # DOI 形式的 ID（如 10.64898/...）也走 /download：其回退链（仓储/Unpaywall/Sci-Hub）
         # 可按 DOI 解析到 PDF；不要仅凭前缀短路成 read-only。
         is_doi = paper_id.startswith("10.")
@@ -273,9 +281,6 @@ class ReaderAgent:
                 result = response.json()
                 if result.get("success"):
                     returned_path = result.get("save_path", "")
-                    # 规范化文件名：DOI 形如 10.64898/2026.05.18.725649 含 '/'，
-                    # 直接拼会变成嵌套目录，统一替换为 '_'，保证落到扁平 pdfs/ 目录
-                    safe_paper_id = sanitize_paper_id_for_filename(paper_id)
                     expected_path = os.path.join(target_dir, f"{safe_paper_id}.pdf")
 
                     resolved_path = _resolve_downloaded_pdf(
@@ -339,6 +344,7 @@ class ReaderAgent:
             possible_paths = [
                 task.pdf_path,
                 os.path.join("./data/downloads", f"{safe_id}.pdf"),
+                # 旧扁平结构：data/papers/<category>/pdfs/<safe_id>.pdf（迁移前兼容）
                 os.path.join("./data/papers", f"{safe_id}.pdf"),
             ]
 
@@ -347,6 +353,15 @@ class ReaderAgent:
                 if os.path.exists(p):
                     found_path = p
                     break
+
+            # 新结构：data/papers/<category>/<safe_id>/<safe_id>.pdf（类别未知，glob 查找）
+            if not found_path and safe_id:
+                import glob
+                candidates = glob.glob(
+                    os.path.join("./data/papers", "*", safe_id, f"{safe_id}.pdf")
+                )
+                if candidates:
+                    found_path = candidates[0]
 
             if found_path:
                 task.pdf_path = found_path

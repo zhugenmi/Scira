@@ -242,7 +242,7 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
           case 'thinking':
             setMessages(prev => prev.map(msg =>
               msg.id === assistantMessageId
-                ? { ...msg, workflowStatus: data.data?.message || 'AI 正在思考...' }
+                ? { ...msg, workflowStatus: data.data?.message || 'thinking...' }
                 : msg
             ))
             break
@@ -464,7 +464,7 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
       role: 'assistant',
       content: '',
       timestamp: new Date(),
-      workflowStatus: 'AI 正在思考...'
+      workflowStatus: 'thinking...'
     }])
 
     setStatus('thinking')
@@ -515,7 +515,7 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
               case 'thinking':
                 setMessages(prev => prev.map(msg =>
                   msg.id === assistantMessageId
-                    ? { ...msg, workflowStatus: data.data?.message || 'AI 正在思考...' }
+                    ? { ...msg, workflowStatus: data.data?.message || 'thinking...' }
                     : msg
                 ))
                 break
@@ -524,14 +524,14 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
                 currentContent = data.data?.content || ''
                 setMessages(prev => prev.map(msg =>
                   msg.id === assistantMessageId
-                    ? { ...msg, content: currentContent, workflowStatus: currentContent ? undefined : (msg.workflowStatus || 'AI 正在思考...') }
+                    ? { ...msg, content: currentContent, workflowStatus: currentContent ? undefined : (msg.workflowStatus || 'thinking...') }
                     : msg
                 ))
                 break
 
               case 'token':
                 currentContent += data.data?.token || ''
-                // 保留 workflowStatus：响应期间持续显示状态（如「AI 正在思考...」+ 旋转图标），
+                // 保留 workflowStatus：响应期间持续显示状态（如「thinking...」+ 旋转图标），
                 // 避免长耗时阶段（如论文精读的 analyze_paper）页面看起来静止。
                 // 仅在尚无具体状态时设一个通用的「正在思考...」。
                 setMessages(prev => prev.map(msg =>

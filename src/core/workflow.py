@@ -594,9 +594,10 @@ def retrieval_node(state: GraphState) -> GraphState:
                 category_dir = papers_dir / category
                 category_dir.mkdir(parents=True, exist_ok=True)
 
-                # 创建pdfs子目录
-                pdfs_dir = category_dir / "pdfs"
-                pdfs_dir.mkdir(parents=True, exist_ok=True)
+                # 每篇论文落到独立子目录 <category>/<safe_pid>/<safe_pid>.pdf，
+                # 与精读结果文档（snap/lens/sphere_*.json）同目录共存。pdfs_dir 语义
+                # 为「类别基目录」，ReaderAgent 内部会再建 <safe_pid>/ 子目录。
+                pdfs_dir = category_dir
 
                 # 只保存本次检索到的论文，不与已有论文混合
                 current_papers = []
@@ -615,9 +616,7 @@ def retrieval_node(state: GraphState) -> GraphState:
                         keywords = extract_keywords_from_text(title, abstract, search_keywords)
 
                     # 创建论文信息
-                    # 规范化 paper_id 为安全文件名：DOI 含 '/' 会变成嵌套目录，
-                    # 统一替换为 '_'，保证 pdf_path 指向扁平 pdfs/ 目录下的文件，
-                    # 与 ReaderAgent 实际落盘的文件名一致
+                    # 规范化 paper_id 为安全文件名：DOI 含 '/' 会变成嵌套目录，统一替换为 '_'
                     from src.agents.reader import sanitize_paper_id_for_filename
                     safe_pid = sanitize_paper_id_for_filename(paper_id)
                     paper_info = {
@@ -629,7 +628,7 @@ def retrieval_node(state: GraphState) -> GraphState:
                         "pdf_url": p.get("pdf_url", ""),
                         "keywords": keywords,
                         "citations": p.get("citations", 0),
-                        "pdf_path": str(pdfs_dir / f"{safe_pid}.pdf") if p.get("pdf_url") else "",
+                        "pdf_path": str(pdfs_dir / safe_pid / f"{safe_pid}.pdf") if p.get("pdf_url") else "",
                     }
                     current_papers.append(paper_info)
 
@@ -758,7 +757,7 @@ def retrieval_node(state: GraphState) -> GraphState:
 
                     # 仅保留有 pdf_url 的论文
                     papers_with_pdf = [p for p in state["search_results"] if p.get("pdf_url")]
-                    # 去重：跳过 pdfs_dir 下已存在 PDF 的论文（避免重复下载）
+                    # 去重：跳过已下载 PDF 的论文（per-paper 子目录下判断）
                     pending: List[Dict[str, Any]] = []
                     skipped_existing = 0
                     seen_ids = set()
@@ -768,7 +767,7 @@ def retrieval_node(state: GraphState) -> GraphState:
                             continue
                         seen_ids.add(pid)
                         safe = _safe_pid(pid)
-                        if (pdfs_dir / f"{safe}.pdf").exists():
+                        if (pdfs_dir / safe / f"{safe}.pdf").exists():
                             skipped_existing += 1
                             continue
                         pending.append({
@@ -855,7 +854,7 @@ def reading_node(state: GraphState) -> GraphState:
 
         import os
         base_dir = os.path.abspath(".")
-        pdfs_dir = state.get("pdfs_dir", os.path.join(base_dir, "data/papers/pdfs"))
+        pdfs_dir = state.get("pdfs_dir", os.path.join(base_dir, "data/papers/general"))
         if not os.path.isabs(pdfs_dir):
             pdfs_dir = os.path.join(base_dir, pdfs_dir)
         logger.info(f"PDF directory: {pdfs_dir}")
@@ -1394,10 +1393,10 @@ def run_download_and_rest(
     try:
         pdfs_dir = state.get("pdfs_dir")
         if not pdfs_dir:
-            # 兜底：从 current_category 重建
+            # 兜底：从 current_category 重建（类别基目录，ReaderAgent 内部再建 per-paper 子目录）
             from pathlib import Path as _P
             cat = state.get("current_category", "general")
-            pdfs_dir = str(_P("data/papers") / cat / "pdfs")
+            pdfs_dir = str(_P("data/papers") / cat)
             state["pdfs_dir"] = pdfs_dir
 
         if selected_papers:

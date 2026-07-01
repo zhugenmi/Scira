@@ -390,17 +390,18 @@ def build_paper_context(parsed: ParsedPaper, mode: str = "snap", max_chars: int 
     return context
 
 
-PAPER_READING_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "paper_reading"
+def _cache_path(pdf_path: str, mode: str, language: str) -> Path:
+    """精读结果缓存路径：与 PDF 同目录下的 {mode}_{language}.json。
+
+    每篇论文独占一个目录（data/papers/<category>/<paper_id>/ 或 _uploads/<paper_id>/），
+    故文件名无需再带 paper_id 前缀。
+    """
+    return Path(pdf_path).parent / f"{mode}_{language}.json"
 
 
-def _cache_path(paper_id: str, mode: str, language: str) -> Path:
-    """精读结果缓存路径：data/paper_reading/{paper_id}/{mode}_{language}.json"""
-    return PAPER_READING_DIR / paper_id / f"{mode}_{language}.json"
-
-
-def load_cached_result(paper_id: str, mode: str, language: str) -> Optional[Dict[str, Any]]:
+def load_cached_result(pdf_path: str, mode: str, language: str) -> Optional[Dict[str, Any]]:
     """读取已缓存的精读结果，没有则返回None"""
-    cache_file = _cache_path(paper_id, mode, language)
+    cache_file = _cache_path(pdf_path, mode, language)
     if not cache_file.exists():
         return None
     try:
@@ -413,9 +414,9 @@ def load_cached_result(paper_id: str, mode: str, language: str) -> Optional[Dict
         return None
 
 
-def save_result(paper_id: str, mode: str, language: str, result: Dict[str, Any]) -> None:
-    """保存精读结果到缓存"""
-    cache_file = _cache_path(paper_id, mode, language)
+def save_result(pdf_path: str, mode: str, language: str, result: Dict[str, Any]) -> None:
+    """保存精读结果到 PDF 同目录"""
+    cache_file = _cache_path(pdf_path, mode, language)
     cache_file.parent.mkdir(parents=True, exist_ok=True)
     try:
         with open(cache_file, "w", encoding="utf-8") as f:
@@ -449,7 +450,7 @@ def analyze_paper_stream(
 
     # 0. 检查缓存
     if use_cache:
-        cached = load_cached_result(paper_id, mode, language)
+        cached = load_cached_result(pdf_path, mode, language)
         if cached:
             cached["from_cache"] = True
             yield {"type": "cache_hit", "result": cached}
@@ -531,7 +532,7 @@ def analyze_paper_stream(
     }
 
     if used_llm:
-        save_result(paper_id, mode, language, result)
+        save_result(pdf_path, mode, language, result)
 
     yield {"type": "complete", "result": result}
 

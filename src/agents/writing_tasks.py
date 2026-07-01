@@ -45,51 +45,68 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parent.parent.parent
 
 
-def _try_paper_context(paper_id: Optional[str]) -> Optional[WritingContext]:
-    """从 data/paper_reading/{paper_id}/original.pdf 构建单篇论文上下文。
+def _find_paper_pdf(paper_id: Optional[str]) -> Optional[Path]:
+    """在 data/papers/ 下按 paper_id 查找论文 PDF。
 
-    无 paper_id 时扫描目录取最近修改的论文。解析失败返回 None。
+    结构：data/papers/<category>/<paper_id>/original.pdf 或 <paper_id>.pdf；
+    上传论文在 data/papers/_uploads/<paper_id>/original.pdf。
+    无 paper_id 时返回最近修改的 PDF。
     """
-    pr_dir = _project_root() / "data" / "paper_reading"
-    if not pr_dir.exists():
+    papers_dir = _project_root() / "data" / "papers"
+    if not papers_dir.exists():
         return None
-
-    pdf_path: Optional[Path] = None
-    title = ""
 
     if paper_id:
-        cand = pr_dir / paper_id / "original.pdf"
-        if cand.exists():
-            pdf_path = cand
-            meta_path = pr_dir / paper_id / "metadata.json"
-            if meta_path.exists():
-                try:
-                    title = (json.loads(meta_path.read_text(encoding="utf-8")) or {}).get("title", "")
-                except Exception:
-                    pass
-    else:
-        # 取最近修改的 original.pdf
-        candidates = sorted(
-            (p for p in pr_dir.glob("*/original.pdf") if p.exists()),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-        if candidates:
-            pdf_path = candidates[0]
-            meta_path = pdf_path.parent / "metadata.json"
-            if meta_path.exists():
-                try:
-                    title = (json.loads(meta_path.read_text(encoding="utf-8")) or {}).get("title", "")
-                except Exception:
-                    pass
+        for topic_dir in papers_dir.iterdir():
+            if not topic_dir.is_dir():
+                continue
+            paper_dir = topic_dir / paper_id
+            if not paper_dir.is_dir():
+                continue
+            for name in ("original.pdf", f"{paper_id}.pdf"):
+                cand = paper_dir / name
+                if cand.exists():
+                    return cand
+        return None
 
+    # 无 paper_id：扫所有 per-paper 目录取最近修改的 PDF
+    candidates: list = []
+    for topic_dir in papers_dir.iterdir():
+        if not topic_dir.is_dir():
+            continue
+        for paper_dir in topic_dir.iterdir():
+            if not paper_dir.is_dir():
+                continue
+            for pdf in paper_dir.glob("*.pdf"):
+                if pdf.exists():
+                    candidates.append(pdf)
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)[0]
+
+
+def _try_paper_context(paper_id: Optional[str]) -> Optional[WritingContext]:
+    """从 data/papers/<category>/<paper_id>/ 下的 PDF 构建单篇论文上下文。
+
+    无 paper_id 时取最近修改的论文。解析失败返回 None。
+    """
+    pdf_path = _find_paper_pdf(paper_id)
     if not pdf_path:
         return None
+
+    paper_dir = pdf_path.parent
+    title = ""
+    meta_path = paper_dir / "metadata.json"
+    if meta_path.exists():
+        try:
+            title = (json.loads(meta_path.read_text(encoding="utf-8")) or {}).get("title", "")
+        except Exception:
+            pass
 
     try:
         from src.tools.pdf_parser import PDFParser, ParserBackend
         parser = PDFParser(backend=ParserBackend.PYMUPDF)
-        paper_id = paper_id or pdf_path.parent.name
+        paper_id = paper_id or paper_dir.name
         parsed = parser.parse(str(pdf_path), paper_id, extract_sections=True)
     except Exception as e:
         logger.warning(f"writing_tasks: parse paper failed: {e}")
@@ -183,7 +200,7 @@ def resolve_writing_context(
     优先级：
     1. paper_id_hint 指定的上传论文（聊天里"为这篇论文生成..."）
     2. 会话最近一次工作流结果
-    3. 最近上传的论文（无 hint 时扫描 paper_reading 目录）
+    3. 最近上传的论文（无 hint 时扫描 data/papers/ 下 per-paper 目录）
 
     都没有则抛 ValueError，调用方应回复用户「请先做一次研究或上传一篇论文」。
     """
