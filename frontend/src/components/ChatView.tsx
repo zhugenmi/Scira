@@ -6,6 +6,7 @@ import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
+import PaperSelectionModal from './PaperSelectionModal'
 
 interface RetrievalConditions {
   task_id?: string
@@ -29,7 +30,7 @@ interface Approval {
   error?: string
 }
 
-interface PendingPaper {
+export interface PendingPaper {
   paper_id: string
   title: string
   authors: string[] | string
@@ -40,14 +41,14 @@ interface PendingPaper {
   has_pdf_link: boolean
 }
 
-type PaperDownloadStatus = 'pending' | 'downloading' | 'success' | 'failed'
+export type PaperDownloadStatus = 'pending' | 'downloading' | 'success' | 'failed'
 
-interface PaperStatusEntry {
+export interface PaperStatusEntry {
   status: PaperDownloadStatus
   error?: string
 }
 
-interface DownloadApproval {
+export interface DownloadApproval {
   taskId: string
   papers: PendingPaper[]
   status: 'pending' | 'submitting' | 'approved' | 'rejected'
@@ -100,6 +101,7 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
   const [sessionId, setSessionId] = useState<string | null>(initialSessionId || null)
   const [sessions, setSessions] = useState<Session[]>([])
   const [showSessions, setShowSessions] = useState(false)
+  const [modalOpen, setModalOpen] = useState<{ msgId: string } | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
@@ -736,16 +738,6 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
     }
   }
 
-  // 切换某篇候选论文的勾选状态
-  const handleToggleDownloadPaper = (assistantMessageId: string, paperId: string) => {
-    setMessages(prev => prev.map(m => {
-      if (m.id !== assistantMessageId || !m.downloadApproval) return m
-      const cur = m.downloadApproval.selectedIds
-      const selectedIds = cur.includes(paperId) ? cur.filter(id => id !== paperId) : [...cur, paperId]
-      return { ...m, downloadApproval: { ...m.downloadApproval, selectedIds } }
-    }))
-  }
-
   // 确认下载：提交勾选的 paper_id，后端执行下载 + 后续节点
   const handleApproveDownload = async (
     assistantMessageId: string,
@@ -1094,9 +1086,20 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
               {message.role === 'assistant' && message.downloadApproval && (
                 <PaperDownloadCard
                   approval={message.downloadApproval}
-                  onApprove={(selectedIds) => handleApproveDownload(message.id, message.downloadApproval!.taskId, selectedIds)}
+                  onOpenModal={() => setModalOpen({ msgId: message.id })}
                   onReject={() => handleRejectDownload(message.id, message.downloadApproval!.taskId)}
-                  onToggle={(paperId) => handleToggleDownloadPaper(message.id, paperId)}
+                />
+              )}
+
+              {modalOpen && modalOpen.msgId === message.id && message.downloadApproval && (
+                <PaperSelectionModal
+                  open
+                  approval={message.downloadApproval}
+                  workflowMode={'full'}
+                  onClose={() => setModalOpen(null)}
+                  onSubmit={(ids, targetCat, newName) => {
+                    handleApproveDownload(message.id, message.downloadApproval!.taskId, ids, targetCat, newName)
+                  }}
                 />
               )}
 
@@ -1296,96 +1299,37 @@ function ApprovalCard({
 
 function PaperDownloadCard({
   approval,
-  onApprove,
+  onOpenModal,
   onReject,
-  onToggle,
 }: {
   approval: DownloadApproval
-  onApprove: (selectedIds: string[]) => void
+  onOpenModal: () => void
   onReject: () => void
-  onToggle: (paperId: string) => void
 }) {
-  const { papers, selectedIds, status, error } = approval
-  const allSelected = papers.length > 0 && selectedIds.length === papers.length
+  const { papers, status, submitted, paperStatus } = approval
   const readonly = status === 'approved' || status === 'rejected' || status === 'submitting'
 
-  const fmtAuthors = (a: string[] | string) => {
-    const arr = Array.isArray(a) ? a : (a ? String(a).split(';').map(s => s.trim()).filter(Boolean) : [])
-    if (!arr.length) return '佚名'
-    const head = arr.slice(0, 3).join(', ')
-    return arr.length > 3 ? `${head} 等` : head
-  }
-  const fmtYear = (d: string) => {
-    if (!d) return ''
-    const m = String(d).match(/\d{4}/)
-    return m ? m[0] : ''
-  }
-
-  const toggleAll = () => {
-    if (allSelected) {
-      papers.forEach(p => { if (selectedIds.includes(p.paper_id)) onToggle(p.paper_id) })
-    } else {
-      papers.forEach(p => { if (!selectedIds.includes(p.paper_id)) onToggle(p.paper_id) })
-    }
-  }
+  const successCount = papers.filter(p => paperStatus[p.paper_id]?.status === 'success').length
+  const failedCount = papers.filter(p => paperStatus[p.paper_id]?.status === 'failed').length
+  const total = papers.length
+  const downloading = submitted && successCount + failedCount < total
 
   return (
     <div className="mt-3 rounded-xl border border-primary-500/30 bg-primary-500/5 p-3 text-left">
       <div className="flex items-center justify-between mb-2">
         <div className="text-sm font-medium text-dark-text">
-          论文下载确认 <span className="text-dark-muted">（共 {papers.length} 篇候选）</span>
+          {submitted
+            ? `下载中 ${successCount + failedCount}/${total}`
+            : `论文下载确认（共 ${total} 篇候选）`}
         </div>
-        {!readonly && (
-          <button
-            onClick={toggleAll}
-            className="text-xs px-2 py-1 rounded border border-dark-border hover:bg-dark-surface text-dark-muted"
-          >
-            {allSelected ? '取消全选' : '全选'}
-          </button>
-        )}
       </div>
-
-      <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
-        {papers.map((p) => {
-          const checked = selectedIds.includes(p.paper_id)
-          return (
-            <label
-              key={p.paper_id}
-              className={`flex gap-2 items-start p-2 rounded-lg border transition-colors ${
-                checked ? 'border-primary-500/50 bg-primary-500/10' : 'border-dark-border bg-dark-surface/40'
-              } ${readonly ? 'cursor-default opacity-80' : 'cursor-pointer hover:bg-dark-surface'}`}
-            >
-              <input
-                type="checkbox"
-                checked={checked}
-                disabled={readonly}
-                onChange={() => onToggle(p.paper_id)}
-                className="mt-0.5 accent-primary-500"
-              />
-              <div className="min-w-0 flex-1">
-                <div className="text-sm text-dark-text font-medium truncate">{p.title || 'Untitled'}</div>
-                <div className="text-xs text-dark-muted truncate">
-                  {fmtAuthors(p.authors)}{fmtYear(p.published_date) ? ` · ${fmtYear(p.published_date)}` : ''}
-                </div>
-                {p.abstract && (
-                  <div className="text-xs text-dark-muted/80 mt-0.5 line-clamp-2">{p.abstract}</div>
-                )}
-              </div>
-            </label>
-          )
-        })}
-      </div>
-
-      {error && <div className="text-xs text-red-400 mt-2">{error}</div>}
-
-      {!readonly ? (
-        <div className="flex gap-2 mt-3">
+      {!readonly && (
+        <div className="flex gap-2">
           <button
-            onClick={() => onApprove(selectedIds)}
-            disabled={selectedIds.length === 0}
-            className="flex-1 px-3 py-1.5 rounded-lg bg-primary-500 hover:bg-primary-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium transition-colors"
+            onClick={onOpenModal}
+            className="flex-1 px-3 py-1.5 rounded-lg bg-primary-500 hover:bg-primary-600 text-white text-sm font-medium transition-colors"
           >
-            确认下载 {selectedIds.length} 篇
+            {submitted ? '查看下载进度' : '查看 / 选择详情'}
           </button>
           <button
             onClick={onReject}
@@ -1394,10 +1338,11 @@ function PaperDownloadCard({
             跳过下载
           </button>
         </div>
-      ) : (
-        <div className="mt-2 text-xs text-green-400 flex items-center gap-1">
+      )}
+      {readonly && status === 'approved' && (
+        <div className="text-xs text-green-400 flex items-center gap-1">
           <Check className="w-3 h-3" />
-          {status === 'approved' ? `已确认下载 ${selectedIds.length} 篇` : status === 'rejected' ? '已跳过下载' : '提交中...'}
+          {downloading ? `下载中 ${successCount + failedCount}/${total}` : `下载完成（成功 ${successCount}，失败 ${failedCount}）`}
         </div>
       )}
     </div>
