@@ -415,6 +415,43 @@ def _match_existing_category(
     return None
 
 
+def build_pending_download_papers(
+    state: GraphState, pdfs_dir: "Path"
+) -> List[Dict[str, Any]]:
+    """
+    从 search_results 构建待下载论文清单：仅保留有 pdf_url 的，去重已下载，透传 source/has_pdf_link。
+    抽出来便于单元测试；retrieval_node 内部调用此函数。
+    """
+    from src.agents.reader import sanitize_paper_id_for_filename as _safe_pid
+    from config.settings import get_config
+
+    config = get_config()
+    max_pdf_download = config.max_pdf_download
+    papers_with_pdf = [p for p in state["search_results"] if p.get("pdf_url")]
+
+    pending: List[Dict[str, Any]] = []
+    seen_ids = set()
+    for p in papers_with_pdf[:max_pdf_download]:
+        pid = p.get("paper_id", "")
+        if pid in seen_ids:
+            continue
+        seen_ids.add(pid)
+        safe = _safe_pid(pid)
+        if (pdfs_dir / safe / f"{safe}.pdf").exists():
+            continue
+        pending.append({
+            "paper_id": pid,
+            "title": p.get("title", ""),
+            "authors": p.get("authors", []),
+            "published_date": p.get("published_date", ""),
+            "abstract": (p.get("abstract", "") or "")[:300],
+            "pdf_url": p.get("pdf_url", ""),
+            "source": p.get("source", "unknown"),
+            "has_pdf_link": bool(p.get("pdf_url")),
+        })
+    return pending
+
+
 def init_state(state: GraphState) -> GraphState:
     """Initialize the state with user query."""
     # 生成 run_id 并同步到 contextvars，使后续所有日志行带同一 run_id
@@ -750,54 +787,37 @@ def retrieval_node(state: GraphState) -> GraphState:
                 #   触发真正的下载。检索与下载解耦。
                 workflow_mode = (state.get("workflow_mode") or "full").strip().lower()
                 if workflow_mode in ("full", "search"):
+                    pending = build_pending_download_papers(state, pdfs_dir)
+                    # 统计被跳过的已下载篇数（用于 details.already_downloaded）
                     from src.agents.reader import sanitize_paper_id_for_filename as _safe_pid
                     from config.settings import get_config
-
-                    config = get_config()
-                    max_pdf_download = config.max_pdf_download
-
-                    # 仅保留有 pdf_url 的论文
-                    papers_with_pdf = [p for p in state["search_results"] if p.get("pdf_url")]
-                    # 去重：跳过已下载 PDF 的论文（per-paper 子目录下判断）
-                    pending: List[Dict[str, Any]] = []
-                    skipped_existing = 0
-                    seen_ids = set()
-                    for p in papers_with_pdf[:max_pdf_download]:
+                    _papers_with_pdf = [p for p in state["search_results"] if p.get("pdf_url")]
+                    _seen = set()
+                    _skipped = 0
+                    for p in _papers_with_pdf[:get_config().max_pdf_download]:
                         pid = p.get("paper_id", "")
-                        if pid in seen_ids:
+                        if pid in _seen:
                             continue
-                        seen_ids.add(pid)
-                        safe = _safe_pid(pid)
-                        if (pdfs_dir / safe / f"{safe}.pdf").exists():
-                            skipped_existing += 1
-                            continue
-                        pending.append({
-                            "paper_id": pid,
-                            "title": p.get("title", ""),
-                            "authors": p.get("authors", []),
-                            "published_date": p.get("published_date", ""),
-                            "abstract": (p.get("abstract", "") or "")[:300],
-                            "pdf_url": p.get("pdf_url", ""),
-                        })
+                        _seen.add(pid)
+                        if (pdfs_dir / _safe_pid(pid) / f"{_safe_pid(pid)}.pdf").exists():
+                            _skipped += 1
 
                     logger.info(
-                        f"Download candidates: {len(pending)} (skipped {skipped_existing} already-downloaded, "
-                        f"{len(papers_with_pdf)} had pdf_url, cap={max_pdf_download})"
+                        f"Download candidates: {len(pending)} (skipped {_skipped} already-downloaded, "
+                        f"{len(_papers_with_pdf)} had pdf_url, cap={get_config().max_pdf_download})"
                     )
 
                     state["pending_download_papers"] = pending
                     state["download_approval"] = "pending"
-                    # 暂停下载，等待用户确认。literature_data 在确认下载后由 approve-download 流程填充。
                     state["literature_data"] = []
                     state["reading_errors"] = []
 
-                    # 推送下载确认事件（前端据此渲染论文清单卡片）
                     _emit_progress(
                         "paper_download_approval_request",
                         details={
                             "pending_download_papers": pending,
                             "papers_found": len(state["search_results"]),
-                            "already_downloaded": skipped_existing,
+                            "already_downloaded": _skipped,
                         },
                     )
                 else:

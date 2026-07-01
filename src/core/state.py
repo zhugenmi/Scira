@@ -96,6 +96,9 @@ class GraphState(TypedDict):
     pending_download_papers: Optional[List[Dict[str, Any]]]  # [{paper_id,title,authors,year,abstract,pdf_url}]
     download_approval: Optional[str]  # ApprovalStatus value for download step
 
+    pending_categories: Optional[List[str]]      # 已有知识库列表（retrieval 填充，供前端下拉）
+    pending_matched_category: Optional[str]      # retrieval 自动匹配的类别名（供前端默认选中）
+
     # 检索落盘元数据。LangGraph 1.x 仅保留 GraphState 中声明的键，
     # 未声明的 key 会在节点返回 state 时被丢弃，导致后续节点拿不到。
     # 这些字段由 retrieval_node 写入，供 run_download_and_rest / reading_node 等读取。
