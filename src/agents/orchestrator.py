@@ -28,6 +28,7 @@ class IntentType(str, Enum):
     GENERATE_ABSTRACT = "generate_abstract"
     GENERATE_INTRODUCTION = "generate_introduction"
     GENERATE_CONCLUSION = "generate_conclusion"
+    LIST_KB = "list_kb"             # 询问系统知识库本身（有哪些/包含哪些论文）
     CLARIFICATION = "clarification" # 需要澄清
     HELP = "help"                   # 帮助请求
     UNKNOWN = "unknown"             # 未知
@@ -108,6 +109,7 @@ class OrchestratorAgent(BaseAgent):
             RecognizedIntent.GENERATE_ABSTRACT: IntentType.GENERATE_ABSTRACT,
             RecognizedIntent.GENERATE_INTRODUCTION: IntentType.GENERATE_INTRODUCTION,
             RecognizedIntent.GENERATE_CONCLUSION: IntentType.GENERATE_CONCLUSION,
+            RecognizedIntent.LIST_KB: IntentType.LIST_KB,
             RecognizedIntent.CLARIFICATION: IntentType.CLARIFICATION,
             RecognizedIntent.HELP: IntentType.HELP,
             RecognizedIntent.UNKNOWN: IntentType.UNKNOWN,
@@ -307,6 +309,15 @@ class OrchestratorAgent(BaseAgent):
             result["action"] = "generate_conclusion"
             result["requires_workflow"] = False
             result["workflow_mode"] = "none"
+
+        elif intent_result.intent == IntentType.LIST_KB:
+            # 询问系统知识库本身：直接列出 data/papers 下的知识库与论文清单
+            from src.core.knowledge import list_knowledge_bases, format_knowledge_base_listing
+            listing = list_knowledge_bases()
+            response = format_knowledge_base_listing(listing)
+            result["response"] = response
+            result["action"] = "list_kb"
+            result["kb_listing"] = listing
 
         elif intent_result.intent == IntentType.CLARIFICATION:
             # 需要澄清

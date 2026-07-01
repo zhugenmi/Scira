@@ -1,15 +1,17 @@
 import { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Send, Sparkles, Bot, User, Loader2, Plus, Trash2, MessageSquare, Clock, Check, X } from 'lucide-react'
+import { Send, Sparkles, Bot, User, Loader2, Plus, Trash2, MessageSquare, Clock, Check, X, BookOpen } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
 import PaperSelectionModal from './PaperSelectionModal'
+import KbGenerateModal from './KbGenerateModal'
 import { OutlineCard } from './cards/OutlineCard'
 import { WritingCard } from './cards/WritingCard'
 import { ReviewCard } from './cards/ReviewCard'
+import { InlineTimer } from './cards/CardTimer'
 
 interface RetrievalConditions {
   task_id?: string
@@ -67,16 +69,37 @@ interface OutlineCardData {
   title?: string
   sections?: { section_id?: string; title?: string; key_points?: string[] }[]
   expanded?: boolean
+  generating?: boolean
+  timerStart?: number | null
+  timerEnd?: number | null
 }
 interface WritingCardData {
   content: string
   done: boolean
   expanded?: boolean
+  generating?: boolean
+  timerStart?: number | null
+  timerEnd?: number | null
 }
 interface ReviewCardData {
   revision_feedback?: string
   final_review?: string
   expanded?: boolean
+  generating?: boolean
+  timerStart?: number | null
+  timerEnd?: number | null
+}
+
+interface PhaseTimer {
+  start?: number | null
+  end?: number | null
+}
+interface PhaseTimers {
+  retrieval?: PhaseTimer
+  download?: PhaseTimer
+  outline?: PhaseTimer
+  writing?: PhaseTimer
+  review?: PhaseTimer
 }
 
 interface Message {
@@ -90,6 +113,7 @@ interface Message {
   outlineCard?: OutlineCardData
   writingCard?: WritingCardData
   reviewCard?: ReviewCardData
+  phaseTimers?: PhaseTimers
 }
 
 interface Session {
@@ -124,6 +148,7 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
   const [sessions, setSessions] = useState<Session[]>([])
   const [showSessions, setShowSessions] = useState(false)
   const [modalOpen, setModalOpen] = useState<{ msgId: string } | null>(null)
+  const [kbModalOpen, setKbModalOpen] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
@@ -251,6 +276,22 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
     }
   }, [])
 
+  // 更新某条助手消息的 phaseTimers 字段
+  const setPhaseTimer = (
+    assistantMessageId: string,
+    phase: 'retrieval' | 'download' | 'outline' | 'writing' | 'review',
+    field: 'start' | 'end',
+    ts: number,
+  ) => {
+    setMessages(prev => prev.map(msg => {
+      if (msg.id !== assistantMessageId) return msg
+      const timers = { ...(msg.phaseTimers || {}) }
+      const cur = timers[phase] || {}
+      timers[phase] = { ...cur, [field]: ts }
+      return { ...msg, phaseTimers: timers }
+    }))
+  }
+
   // SSE 事件处理
   const startWorkflowSSE = (taskId: string, assistantMessageId: string) => {
     // 关闭之前的连接
@@ -290,19 +331,27 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
             ))
             break
 
-          case 'phase':
+          case 'phase': {
+            const phaseName = data.data?.phase
+            // retrieval 阶段开始：启动检索计时
+            if (phaseName === 'retrieval') {
+              setPhaseTimer(assistantMessageId, 'retrieval', 'start', Date.now())
+            }
             setMessages(prev => prev.map(msg =>
               msg.id === assistantMessageId
                 ? { ...msg, workflowStatus: data.data?.message || '' }
                 : msg
             ))
             break
+          }
 
           case 'download': {
             // per-paper 事件：data.data.paper_id 存在时更新 paperStatus
             const pid = data.data?.paper_id
             const pstatus = data.data?.paper_status
             if (pid && pstatus) {
+              // 首个下载事件：启动下载计时（若未启动）
+              setPhaseTimer(assistantMessageId, 'download', 'start', Date.now())
               setMessages(prev => prev.map(msg => {
                 if (!msg.downloadApproval) return msg
                 const ps = { ...msg.downloadApproval.paperStatus }
@@ -310,7 +359,17 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
                   status: pstatus as PaperDownloadStatus,
                   error: data.data?.error || undefined,
                 }
-                return { ...msg, downloadApproval: { ...msg.downloadApproval, paperStatus: ps } }
+                // 检测是否全部完成：所有 paper 都 success/failed → 冻结下载计时
+                const allDone = Object.values(ps).every(s => s.status === 'success' || s.status === 'failed')
+                const newTimers = { ...(msg.phaseTimers || {}) }
+                if (allDone && newTimers.download && !newTimers.download.end) {
+                  newTimers.download = { ...newTimers.download, end: Date.now() }
+                }
+                return {
+                  ...msg,
+                  downloadApproval: { ...msg.downloadApproval, paperStatus: ps },
+                  phaseTimers: newTimers,
+                }
               }))
             }
             // 同时更新顶层 workflowStatus 文本（计数事件）
@@ -323,6 +382,7 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
           }
 
           case 'reading':
+            // KB-based 工作流在 reading 阶段加载精读结果，等价于检索完成
             setMessages(prev => prev.map(msg =>
               msg.id === assistantMessageId
                 ? { ...msg, workflowStatus: data.data?.message || '阅读论文中...' }
@@ -330,18 +390,74 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
             ))
             break
 
-          case 'generation':
-            setMessages(prev => prev.map(msg =>
-              msg.id === assistantMessageId
-                ? { ...msg, workflowStatus: data.data?.message || '生成报告中...' }
-                : msg
-            ))
+          case 'generation': {
+            const stage = data.data?.stage
+            const now = Date.now()
+            if (stage === 'outline') {
+              // 大纲阶段开始：渲染占位卡片 + 启动计时
+              setMessages(prev => prev.map(msg =>
+                msg.id === assistantMessageId
+                  ? {
+                      ...msg,
+                      workflowStatus: data.data?.message || '生成论文大纲中...',
+                      outlineCard: { ...(msg.outlineCard || {}), expanded: true, generating: true, timerStart: msg.outlineCard?.timerStart || now },
+                    }
+                  : msg
+              ))
+              setPhaseTimer(assistantMessageId, 'outline', 'start', now)
+            } else if (stage === 'writing') {
+              setPhaseTimer(assistantMessageId, 'writing', 'start', now)
+              setMessages(prev => prev.map(msg =>
+                msg.id === assistantMessageId
+                  ? {
+                      ...msg,
+                      workflowStatus: data.data?.message || '论文写作中...',
+                      writingCard: {
+                        content: msg.writingCard?.content || '',
+                        done: false,
+                        expanded: true,
+                        generating: true,
+                        timerStart: msg.writingCard?.timerStart || now,
+                      },
+                    }
+                  : msg
+              ))
+            } else if (stage === 'revision') {
+              setPhaseTimer(assistantMessageId, 'review', 'start', now)
+              setMessages(prev => prev.map(msg =>
+                msg.id === assistantMessageId
+                  ? {
+                      ...msg,
+                      workflowStatus: data.data?.message || '论文审查中...',
+                      reviewCard: { ...(msg.reviewCard || {}), expanded: true, generating: true, timerStart: msg.reviewCard?.timerStart || now },
+                    }
+                  : msg
+              ))
+            } else {
+              setMessages(prev => prev.map(msg =>
+                msg.id === assistantMessageId
+                  ? { ...msg, workflowStatus: data.data?.message || '生成报告中...' }
+                  : msg
+              ))
+            }
             break
+          }
 
-          case 'outline_result':
+          case 'outline_result': {
+            const now = Date.now()
+            setPhaseTimer(assistantMessageId, 'outline', 'end', now)
             setMessages(prev => prev.map(msg =>
               msg.id === assistantMessageId
-                ? { ...msg, outlineCard: { ...(data.data || {}), expanded: true } }
+                ? {
+                    ...msg,
+                    outlineCard: {
+                      ...(data.data || {}),
+                      expanded: true,
+                      generating: false,
+                      timerStart: msg.outlineCard?.timerStart || null,
+                      timerEnd: now,
+                    },
+                  }
                 : msg
             ))
             fetch(`/api/chat/session/${sessionId}/card`, {
@@ -350,6 +466,7 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
               body: JSON.stringify({ card_type: 'outline', payload: data.data || {} }),
             }).catch(() => {})
             break
+          }
 
           case 'writing_token':
             setMessages(prev => prev.map(msg =>
@@ -360,13 +477,17 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
                       content: (msg.writingCard?.content || '') + (data.data?.token || ''),
                       done: false,
                       expanded: true,
+                      generating: true,
+                      timerStart: msg.writingCard?.timerStart || Date.now(),
                     },
                   }
                 : msg
             ))
             break
 
-          case 'writing_done':
+          case 'writing_done': {
+            const now = Date.now()
+            setPhaseTimer(assistantMessageId, 'writing', 'end', now)
             setMessages(prev => prev.map(msg =>
               msg.id === assistantMessageId
                 ? {
@@ -375,6 +496,9 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
                       content: data.data?.paper_content || msg.writingCard?.content || '',
                       done: true,
                       expanded: true,
+                      generating: false,
+                      timerStart: msg.writingCard?.timerStart || null,
+                      timerEnd: now,
                     },
                   }
                 : msg
@@ -385,11 +509,23 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
               body: JSON.stringify({ card_type: 'writing', payload: { content: data.data?.paper_content || '', done: true } }),
             }).catch(() => {})
             break
+          }
 
-          case 'review_result':
+          case 'review_result': {
+            const now = Date.now()
+            setPhaseTimer(assistantMessageId, 'review', 'end', now)
             setMessages(prev => prev.map(msg =>
               msg.id === assistantMessageId
-                ? { ...msg, reviewCard: { ...(data.data || {}), expanded: true } }
+                ? {
+                    ...msg,
+                    reviewCard: {
+                      ...(data.data || {}),
+                      expanded: true,
+                      generating: false,
+                      timerStart: msg.reviewCard?.timerStart || null,
+                      timerEnd: now,
+                    },
+                  }
                 : msg
             ))
             fetch(`/api/chat/session/${sessionId}/card`, {
@@ -398,6 +534,7 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
               body: JSON.stringify({ card_type: 'review', payload: data.data || {} }),
             }).catch(() => {})
             break
+          }
 
           case 'paper_download_approval_request': {
             const papers: PendingPaper[] = (data.data?.papers || []).map((p: any) => ({
@@ -409,6 +546,8 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
             const existingCategories: string[] = data.data?.existing_categories || []
             const initialStatus: Record<string, PaperStatusEntry> = {}
             papers.forEach(p => { initialStatus[p.paper_id] = { status: 'pending' } })
+            // 检索阶段结束：冻结检索计时
+            setPhaseTimer(assistantMessageId, 'retrieval', 'end', Date.now())
             setMessages(prev => prev.map(msg =>
               msg.id === assistantMessageId
                 ? {
@@ -459,11 +598,21 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
                   : '研究任务已完成！您可以在"生成论文"页面查看生成的报告。'
               }
             }
-            setMessages(prev => prev.map(msg =>
-              msg.id === assistantMessageId
-                ? { ...msg, content: completeText, workflowStatus: undefined }
-                : msg
-            ))
+            // 完成时冻结所有未冻结的计时器
+            const completeNow = Date.now()
+            setMessages(prev => prev.map(msg => {
+              if (msg.id !== assistantMessageId) return msg
+              const timers = { ...(msg.phaseTimers || {}) }
+              let changed = false
+              for (const ph of ['retrieval', 'download', 'outline', 'writing', 'review'] as const) {
+                const t = timers[ph]
+                if (t && t.start && !t.end) {
+                  timers[ph] = { ...t, end: completeNow }
+                  changed = true
+                }
+              }
+              return changed ? { ...msg, content: completeText, workflowStatus: undefined, phaseTimers: timers } : { ...msg, content: completeText, workflowStatus: undefined }
+            }))
             break
 
           case 'error':
@@ -919,6 +1068,53 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
     }
   }
 
+  // 从知识库生成综述：提交所选 KB + 主题，后端跑 KB-based 工作流，复用 SSE 卡片流
+  const [kbSubmitting, setKbSubmitting] = useState(false)
+  const [kbError, setKbError] = useState<string | null>(null)
+  const handleStartFromKb = async (categories: string[], topic: string) => {
+    setKbError(null)
+    setKbSubmitting(true)
+    // 先添加用户侧占位消息（与聊天 sendMessage 一致）
+    const userMsgId = Date.now().toString()
+    setMessages(prev => [...prev, {
+      id: userMsgId,
+      role: 'user',
+      content: `基于知识库「${categories.join(', ')}」生成综述：${topic}`,
+      timestamp: new Date(),
+    }])
+    const assistantMessageId = (Date.now() + 1).toString()
+    setMessages(prev => [...prev, {
+      id: assistantMessageId,
+      role: 'assistant',
+      content: '',
+      timestamp: new Date(),
+      workflowStatus: '正在加载知识库精读结果...',
+      phaseTimers: { retrieval: { start: Date.now() } },
+    }])
+    try {
+      const res = await fetch('/api/workflow/start-from-kb', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ categories, topic, session_id: sessionId || undefined }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data.task_id) {
+        throw new Error(data.detail || '启动失败')
+      }
+      if (data.session_id && !sessionId) {
+        setSessionId(data.session_id)
+      }
+      setKbModalOpen(false)
+      setStatus('running')
+      startWorkflowSSE(data.task_id, assistantMessageId)
+    } catch (e) {
+      setKbError(e instanceof Error ? e.message : '未知错误')
+      setMessages(prev => prev.filter(m => m.id !== userMsgId && m.id !== assistantMessageId))
+    } finally {
+      setKbSubmitting(false)
+    }
+  }
+
   // Load session on mount
   useEffect(() => {
     const initSession = async () => {
@@ -1198,7 +1394,11 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
 
               {message.role === 'assistant' && message.outlineCard && (
                 <OutlineCard
-                  data={message.outlineCard}
+                  data={{
+                    ...message.outlineCard,
+                    timerStart: message.outlineCard.timerStart ?? message.phaseTimers?.outline?.start ?? null,
+                    timerEnd: message.outlineCard.timerEnd ?? message.phaseTimers?.outline?.end ?? null,
+                  }}
                   onToggle={() => setMessages(prev => prev.map(m =>
                     m.id === message.id ? { ...m, outlineCard: { ...m.outlineCard!, expanded: !m.outlineCard!.expanded } } : m
                   ))}
@@ -1206,7 +1406,11 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
               )}
               {message.role === 'assistant' && message.writingCard && (
                 <WritingCard
-                  data={message.writingCard}
+                  data={{
+                    ...message.writingCard,
+                    timerStart: message.writingCard.timerStart ?? message.phaseTimers?.writing?.start ?? null,
+                    timerEnd: message.writingCard.timerEnd ?? message.phaseTimers?.writing?.end ?? null,
+                  }}
                   onToggle={() => setMessages(prev => prev.map(m =>
                     m.id === message.id ? { ...m, writingCard: { ...m.writingCard!, expanded: !m.writingCard!.expanded } } : m
                   ))}
@@ -1214,7 +1418,11 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
               )}
               {message.role === 'assistant' && message.reviewCard && (
                 <ReviewCard
-                  data={message.reviewCard}
+                  data={{
+                    ...message.reviewCard,
+                    timerStart: message.reviewCard.timerStart ?? message.phaseTimers?.review?.start ?? null,
+                    timerEnd: message.reviewCard.timerEnd ?? message.phaseTimers?.review?.end ?? null,
+                  }}
                   onToggle={() => setMessages(prev => prev.map(m =>
                     m.id === message.id ? { ...m, reviewCard: { ...m.reviewCard!, expanded: !m.reviewCard!.expanded } } : m
                   ))}
@@ -1225,6 +1433,11 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
                 <div className="flex items-center gap-1.5 mt-1 text-xs text-dark-muted">
                   <Loader2 className="w-3 h-3 animate-spin" />
                   {message.workflowStatus}
+                  {message.phaseTimers?.retrieval?.start && (
+                    <span className="text-[10px] text-dark-muted/70">
+                      (<InlineTimer start={message.phaseTimers.retrieval.start} end={message.phaseTimers.retrieval.end} />)
+                    </span>
+                  )}
                 </div>
               )}
               <div className="text-xs text-dark-muted mt-1">
@@ -1261,6 +1474,19 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
             />
           </div>
           <button
+            type="button"
+            onClick={() => setKbModalOpen(true)}
+            disabled={status === 'running'}
+            title="从已有知识库生成综述"
+            className="w-12 h-12 rounded-xl bg-dark-surface border border-dark-border
+                     hover:bg-dark-border hover:border-primary-500/50
+                     disabled:opacity-50 disabled:cursor-not-allowed
+                     text-primary-400 flex items-center justify-center
+                     transition-all duration-200 active:scale-95"
+          >
+            <BookOpen className="w-5 h-5" />
+          </button>
+          <button
             type="submit"
             disabled={!input.trim() || status === 'running'}
             className="w-12 h-12 rounded-xl bg-primary-500 hover:bg-primary-600
@@ -1294,6 +1520,14 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
           ))}
         </div>
       </div>
+
+      <KbGenerateModal
+        open={kbModalOpen}
+        onClose={() => { if (!kbSubmitting) setKbModalOpen(false) }}
+        onSubmit={handleStartFromKb}
+        submitting={kbSubmitting}
+        error={kbError}
+      />
     </div>
   )
 }

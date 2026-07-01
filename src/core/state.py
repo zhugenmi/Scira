@@ -89,6 +89,10 @@ class GraphState(TypedDict):
     # 用于检索源路由；下游节点暂不消费，但需声明否则 LangGraph 会丢弃。
     domain: Optional[str]
 
+    # 来源知识库（KB-based 写作入口用）：当从已有知识库生成综述时，记录所选类别名。
+    # retrieval_node 不写；run_workflow_from_knowledge_bases 写入。
+    source_categories: Optional[List[str]]
+
     # Human approval: Retrieval conditions
     retrieval_approval: Optional[str]  # ApprovalStatus value
 

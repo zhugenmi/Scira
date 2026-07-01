@@ -78,6 +78,129 @@ def search_knowledge(query: str, session_id: str = None, top_k: int = 5) -> Dict
     return results
 
 
+def list_knowledge_bases() -> Dict[str, Any]:
+    """
+    列出系统中所有知识库及其论文清单，供"系统中有哪些知识库"类查询使用。
+
+    读取 data/papers/all_papers.json 索引 + 各分类 JSON 论文清单，返回：
+    {
+        "categories": [{"name", "topic", "count", "papers": [{paper_id,title,authors,published_date}]}],
+        "total_papers": int,
+        "total_categories": int,
+    }
+    缺索引或分类文件时尽可能降级返回，不抛异常。
+    """
+    result: Dict[str, Any] = {"categories": [], "total_papers": 0, "total_categories": 0}
+    if not PAPERS_DIR.exists():
+        return result
+
+    # 1) 优先用 all_papers.json 索引拿 categories 顺序与 topic/count
+    index: Dict[str, Any] = {}
+    all_papers_file = PAPERS_DIR / "all_papers.json"
+    if all_papers_file.exists():
+        try:
+            with open(all_papers_file, "r", encoding="utf-8") as f:
+                index = json.load(f)
+        except Exception as e:
+            logger.warning(f"Failed to read all_papers.json: {e}")
+
+    categories_index = index.get("categories", {}) or {}
+
+    # 2) 若索引为空，扫目录兜底
+    if not categories_index:
+        for d in sorted(PAPERS_DIR.iterdir()):
+            if d.is_dir() and not d.name.startswith("_") and not d.name.startswith("."):
+                categories_index[d.name] = {"path": str(d / f"{d.name}.json"), "topic": d.name, "count": 0}
+
+    total_papers = 0
+    cat_entries: List[Dict[str, Any]] = []
+    for cat_name, entry in categories_index.items():
+        if isinstance(entry, str):
+            # 旧格式：entry 是 path 字符串
+            cat_path = entry
+            cat_topic = cat_name
+            cat_count = 0
+        else:
+            cat_path = entry.get("path", "")
+            cat_topic = entry.get("topic", "") or cat_name
+            cat_count = int(entry.get("count", 0) or 0)
+
+        papers: List[Dict[str, Any]] = []
+        # 优先读分类 JSON 拿论文清单
+        cat_file = Path(cat_path) if cat_path else (PAPERS_DIR / cat_name / f"{cat_name}.json")
+        if cat_file.exists():
+            try:
+                with open(cat_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                for p in data.get("papers", []) or []:
+                    authors = p.get("authors", [])
+                    if isinstance(authors, str):
+                        authors = [a.strip() for a in authors.split(";") if a.strip()]
+                    papers.append({
+                        "paper_id": p.get("paper_id", ""),
+                        "title": p.get("title", ""),
+                        "authors": authors,
+                        "published_date": p.get("published_date", ""),
+                    })
+                # 文件内实际论文数比索引 count 更可信
+                if papers:
+                    cat_count = len(papers)
+            except Exception as e:
+                logger.warning(f"Failed to read category file {cat_file}: {e}")
+
+        total_papers += cat_count
+        cat_entries.append({
+            "name": cat_name,
+            "topic": cat_topic,
+            "count": cat_count,
+            "papers": papers,
+        })
+
+    cat_entries.sort(key=lambda c: c.get("name", ""))
+    result["categories"] = cat_entries
+    result["total_papers"] = total_papers
+    result["total_categories"] = len(cat_entries)
+    return result
+
+
+def format_knowledge_base_listing(listing: Dict[str, Any]) -> str:
+    """
+    把 list_knowledge_bases() 的结果格式化为纯文本回复（不用 markdown 语法，
+    遵循 Orchestrator 纯文本回复约定）。
+    """
+    cats = listing.get("categories", []) or []
+    if not cats:
+        return "当前系统中还没有任何知识库。您可以输入研究主题，我会为您检索并建立新的知识库。"
+
+    lines: List[str] = []
+    lines.append(f"系统中共有 {len(cats)} 个知识库，收录 {listing.get('total_papers', 0)} 篇论文：")
+    lines.append("")
+    for i, c in enumerate(cats, 1):
+        topic = c.get("topic") or c.get("name", "")
+        name = c.get("name", "")
+        count = c.get("count", 0)
+        # 优先展示 topic（中文友好），括号内附目录名
+        label = topic if topic and topic != name else name
+        lines.append(f"{i}. {label}（目录：{name}，{count} 篇）")
+        for p in (c.get("papers") or [])[:5]:
+            title = (p.get("title") or "Untitled").strip()
+            authors = p.get("authors") or []
+            if isinstance(authors, list):
+                author_str = ", ".join(authors[:3])
+                if len(authors) > 3:
+                    author_str += " 等"
+            else:
+                author_str = str(authors)
+            date = (p.get("published_date") or "")[:4]
+            year = f"({date})" if date else ""
+            lines.append(f"   - {title} — {author_str}{year}")
+        if c.get("count", 0) > 5:
+            lines.append(f"   … 还有 {c['count'] - 5} 篇，可在「知识库」页面查看完整列表。")
+        lines.append("")
+    lines.append("您可以让我基于这些知识库生成综述（点击输入框旁的「从知识库生成」按钮），或输入新主题进行检索。")
+    return "\n".join(lines)
+
+
 def search_papers(query: str, top_k: int = 5) -> List[Dict[str, Any]]:
     """
     搜索论文知识库

@@ -8,6 +8,7 @@ Includes logging, observability, and token tracking.
 from __future__ import annotations
 
 import os
+import json
 from typing import Dict, List, Optional, Any, TypedDict, Annotated
 from dataclasses import dataclass
 from datetime import datetime
@@ -1556,6 +1557,303 @@ def run_download_and_rest(
         state = reading_node(state)
         state = analysis_node(state)
         state = outline_node(state)
+        state = writing_node(state)
+        state = revision_node(state)
+        sync_token_usage_to_state(state)
+        return state
+    finally:
+        _clear_progress_callback()
+
+
+# ==================== Knowledge Base → Writing ====================
+
+def _load_reading_summary(papers_dir: "Path", category: str, paper_id: str) -> Optional[Dict[str, Any]]:
+    """
+    读取一篇论文的精读结果文档（不读 PDF 原文）。
+
+    优先级：lens_zh.json > snap_zh.json > sphere_zh.json。
+    返回 {markdown, mode, word_count, sections_count} 或 None（无任何精读结果）。
+    """
+    from src.agents.reader import sanitize_paper_id_for_filename as _safe_pid
+    safe = _safe_pid(paper_id)
+    paper_dir = papers_dir / category / safe
+    if not paper_dir.is_dir():
+        return None
+    for mode in ("lens", "snap", "sphere"):
+        f = paper_dir / f"{mode}_zh.json"
+        if f.exists():
+            try:
+                with open(f, "r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+                md = data.get("markdown", "") or ""
+                meta = {}
+                if data.get("json"):
+                    try:
+                        import json as _json
+                        meta = _json.loads(data["json"]) if isinstance(data["json"], str) else data["json"]
+                    except Exception:
+                        meta = {}
+                return {
+                    "markdown": md,
+                    "mode": mode,
+                    "word_count": int(meta.get("word_count", 0) or 0),
+                    "sections_count": int(meta.get("sections_count", 0) or 0),
+                }
+            except Exception as e:
+                logger.warning(f"Failed to read {f}: {e}")
+    return None
+
+
+def synthesize_from_reading_summaries(
+    literature_data: List[Dict[str, Any]],
+    topic: str,
+) -> Dict[str, Any]:
+    """
+    用一次 LLM 调用，基于精读结果文档合成 global_knowledge 与 literature_clusters。
+
+    与 analyze_literature 的区别：输入是精读 markdown（已结构化分析）而非 PDF 解析的
+    section_names/word_count，因此合成质量更高，且无需检索/PDF。每条 cluster 内的 papers
+    携带 reading_summary，供下游 WriterAgent 在写作时引用具体内容。
+
+    失败时回退到结构化拼装（按 paper_id 分簇），保证总有结果。
+    """
+    from src.agents.base import BaseAgent
+    from src.agents.prompts import WRITER_SYSTEM
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    # 精读摘要条目（截断超长 markdown，避免 token 爆炸）
+    SUMMARY_CHAR_CAP = 6000
+    entries = []
+    for p in literature_data:
+        ec = p.get("extracted_content") or {}
+        md = (ec.get("reading_summary") or "").strip()
+        if not md:
+            continue
+        if len(md) > SUMMARY_CHAR_CAP:
+            md = md[:SUMMARY_CHAR_CAP] + "\n…（已截断）"
+        authors = p.get("authors") or []
+        if isinstance(authors, str):
+            authors = [a.strip() for a in authors.split(";") if a.strip()]
+        author_str = ", ".join(authors[:3]) + (" 等" if len(authors) > 3 else "") if authors else "佚名"
+        entries.append({
+            "paper_id": p.get("paper_id", ""),
+            "title": p.get("title", ""),
+            "authors": author_str,
+            "year": (p.get("published_date") or "")[:4],
+            "reading_summary": md,
+        })
+
+    if not entries:
+        # 无精读内容：返回最小可用结构
+        return {
+            "global_knowledge": {
+                "research_background": f"基于 {len(literature_data)} 篇知识库论文生成综述。",
+                "mainstream_methods": [],
+                "performance_comparison": [],
+                "research_gaps": [],
+                "future_directions": [],
+                "key_findings": [],
+            },
+            "literature_clusters": [
+                {
+                    "cluster_id": "kb_papers",
+                    "theme": topic,
+                    "papers": [{"paper_id": p.get("paper_id"), "title": p.get("title")} for p in literature_data],
+                }
+            ],
+        }
+
+    papers_block = json.dumps(entries, ensure_ascii=False, indent=2)
+
+    prompt = f"""你是文献分析助手。基于下列多篇论文的「精读结果文档」（已含一句话总结、核心贡献、方法、实验、局限等），请合成：
+
+1. global_knowledge：跨论文的综合知识，字段：
+   - research_background（研究背景，200-400字）
+   - mainstream_methods（主流方法列表，每项含方法名+简述+代表论文 paper_id）
+   - performance_comparison（性能对比要点列表）
+   - research_gaps（研究空白/挑战列表）
+   - future_directions（未来方向列表）
+   - key_findings（关键发现列表）
+2. literature_clusters：按主题/方法把论文分簇（1-5 个簇），每簇：
+   - cluster_id, theme（簇主题）
+   - papers：[{{"paper_id","title","authors","year","contribution":"该论文在该簇中的作用"}}]
+
+研究主题：{topic}
+
+论文精读结果（JSON）：
+{papers_block}
+
+只返回 JSON 对象，键为 global_knowledge 与 literature_clusters，不要 Markdown 代码块。"""
+
+    try:
+        from config.settings import get_config, get_llm_client
+        from src.utils.logger import record_token_usage
+        cfg = get_config()
+        llm = get_llm_client(cfg)
+        resp = llm.invoke([SystemMessage(content="你是文献分析助手，只返回 JSON。"), HumanMessage(content=prompt)])
+        raw = resp.content if hasattr(resp, "content") else str(resp)
+        # 记录 token 到全局 tracker（后续 sync_token_usage_to_state 会刷进 state）
+        record_token_usage(resp, cfg.model.model_name or "gpt-4o")
+        # 提取 JSON
+        import re as _re
+        m = _re.search(r"\{.*\}", raw, _re.DOTALL)
+        if not m:
+            raise ValueError("no JSON in response")
+        parsed = json.loads(m.group())
+        # 兜底字段
+        gk = parsed.get("global_knowledge") or {}
+        for k in ("research_background", "mainstream_methods", "performance_comparison",
+                  "research_gaps", "future_directions", "key_findings"):
+            gk.setdefault(k, [] if k != "research_background" else "")
+        parsed["global_knowledge"] = gk
+        parsed.setdefault("literature_clusters", [])
+        return parsed
+    except Exception as e:
+        logger.warning(f"synthesize_from_reading_summaries LLM failed: {e}")
+        # 回退：单簇 + 最小 global_knowledge
+        return {
+            "global_knowledge": {
+                "research_background": f"基于 {len(entries)} 篇知识库论文生成综述。",
+                "mainstream_methods": [],
+                "performance_comparison": [],
+                "research_gaps": [],
+                "future_directions": [],
+                "key_findings": [],
+            },
+            "literature_clusters": [
+                {
+                    "cluster_id": "kb_papers",
+                    "theme": topic,
+                    "papers": entries,
+                }
+            ],
+        }
+
+
+def run_workflow_from_knowledge_bases(
+    categories: List[str],
+    topic: str,
+    progress_callback=None,
+    session_id: Optional[str] = None,
+    **kwargs,
+) -> GraphState:
+    """
+    从已有知识库生成综述：跳过检索/下载/精读，直接读精读结果文档，
+    合成 global_knowledge/literature_clusters 后跑 outline→writing→revision。
+
+    Args:
+        categories: 选中的知识库目录名列表（data/papers/<name>）
+        topic: 用户本次想生成的综述主题/聚焦方向
+        progress_callback: 同 run_workflow 的 cb(phase, progress, message, details)
+        session_id: 会话 ID（仅用于日志关联，非必需）
+    """
+    from pathlib import Path
+
+    run_id = new_run_id()
+    set_run_id(run_id)
+    logger.info(f"Starting KB-based workflow | categories={categories} | topic={topic}")
+
+    papers_dir = Path("data/papers")
+    state: GraphState = {
+        "user_query": topic,
+        "research_topic": topic,
+        "auto_approve": True,
+        "workflow_mode": "full",
+        "source_categories": list(categories or []),
+        "human_approvals": {},
+        "current_phase": PipelinePhase.INIT,
+        "error_messages": [],
+        "retry_count": 0,
+        "run_id": run_id,
+        "search_results": [],
+        "literature_data": [],
+        "reading_errors": [],
+        "token_usage": {
+            "total_input_tokens": 0,
+            "total_output_tokens": 0,
+            "request_count": 0,
+            "estimated_cost_usd": 0.0,
+        },
+    }
+    reset_token_tracker()
+    _set_progress_callback(progress_callback)
+    try:
+        _emit_progress("init")
+        _emit_progress("reading", message="正在加载知识库精读结果...")
+
+        literature_data: List[Dict[str, Any]] = []
+        skipped: List[str] = []
+        for cat in categories or []:
+            cat_file = papers_dir / cat / f"{cat}.json"
+            if not cat_file.exists():
+                logger.warning(f"KB category file not found: {cat_file}")
+                skipped.append(cat)
+                continue
+            try:
+                with open(cat_file, "r", encoding="utf-8") as f:
+                    cat_data = json.load(f)
+            except Exception as e:
+                logger.warning(f"Failed to read {cat_file}: {e}")
+                skipped.append(cat)
+                continue
+
+            for p in cat_data.get("papers", []) or []:
+                pid = p.get("paper_id", "")
+                if not pid:
+                    continue
+                rs = _load_reading_summary(papers_dir, cat, pid)
+                if rs is None:
+                    # 无精读结果：仍纳入但 reading_summary 为空（writer 仅凭元数据弱引用）
+                    rs = {"markdown": "", "mode": None, "word_count": 0, "sections_count": 0}
+                authors = p.get("authors", [])
+                if isinstance(authors, str):
+                    authors = [a.strip() for a in authors.split(";") if a.strip()]
+                literature_data.append({
+                    "paper_id": pid,
+                    "title": p.get("title", ""),
+                    "authors": authors,
+                    "abstract": p.get("abstract", ""),
+                    "published_date": p.get("published_date", ""),
+                    "pdf_url": p.get("pdf_url", ""),
+                    "source": p.get("source", cat),
+                    "extracted_content": {
+                        "reading_summary": rs["markdown"],
+                        "section_names": [],
+                        "word_count": rs["word_count"],
+                        "reference_count": 0,
+                        "reading_mode": rs["mode"],
+                    },
+                    "reading_status": "completed" if rs["markdown"] else "skipped",
+                })
+
+        state["literature_data"] = literature_data
+        state["current_category"] = categories[0] if categories else "general"
+        state["pdfs_dir"] = str(papers_dir / (categories[0] if categories else "general"))
+
+        logger.info(
+            f"KB-based workflow loaded {len(literature_data)} papers "
+            f"({sum(1 for p in literature_data if p['extracted_content']['reading_summary'])} with reading summary) "
+            f"from {len(categories)} categories, skipped={skipped}"
+        )
+
+        if not literature_data:
+            state["error_messages"].append("所选知识库中没有可用论文")
+            sync_token_usage_to_state(state)
+            return state
+
+        # analysis：用精读结果合成
+        _emit_progress("analysis", message="正在分析精读结果...")
+        synth = synthesize_from_reading_summaries(literature_data, topic)
+        state["literature_clusters"] = synth.get("literature_clusters", [])
+        state["global_knowledge"] = synth.get("global_knowledge", {})
+
+        # 编号参考文献清单（基于 literature_data，绝不 LLM 生成）
+        state["reference_list"] = build_reference_list(state)
+        logger.info(f"KB-based reference list: {len(state['reference_list'])} papers")
+
+        # outline → writing → revision（既有节点）
+        state = outline_node(state)
+        # writing_node 内部会调 build_reference_list，但我们已设 reference_list，会被覆盖为同值
         state = writing_node(state)
         state = revision_node(state)
         sync_token_usage_to_state(state)

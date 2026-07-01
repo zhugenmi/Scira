@@ -41,6 +41,8 @@ class IntentType(str, Enum):
     GENERATE_ABSTRACT = "generate_abstract"
     GENERATE_INTRODUCTION = "generate_introduction"
     GENERATE_CONCLUSION = "generate_conclusion"
+    # 询问系统知识库本身的结构（有哪些知识库/包含哪些论文），不走 LLM 知识检索
+    LIST_KB = "list_kb"
     CLARIFICATION = "clarification"
     HELP = "help"
     UNKNOWN = "unknown"
@@ -55,6 +57,7 @@ _INTENT_TO_MODE: Dict[str, WorkflowMode] = {
     IntentType.GENERATE_ABSTRACT.value: WorkflowMode.NONE,
     IntentType.GENERATE_INTRODUCTION.value: WorkflowMode.NONE,
     IntentType.GENERATE_CONCLUSION.value: WorkflowMode.NONE,
+    IntentType.LIST_KB.value: WorkflowMode.NONE,
     IntentType.CLARIFICATION.value: WorkflowMode.NONE,
     IntentType.HELP.value: WorkflowMode.NONE,
     IntentType.UNKNOWN.value: WorkflowMode.FULL,  # 未知时保守走完整流程
@@ -203,6 +206,19 @@ class IntentAgent(BaseAgent):
         has_conclusion = any(k in msg for k in (
             "生成结论", "生成总结", "写结论", "写总结", "收尾", "结论部分", "帮我写结论",
         ))
+        # 列举系统知识库本身：含"知识库"且含"有哪些/列表/包含/几个"等枚举词
+        has_list_kb = "知识库" in msg and any(
+            k in msg for k in ("有哪些", "列出", "列表", "包含哪些", "几个", "都有什么", "都有哪些", "list")
+        )
+
+        if has_list_kb:
+            return IntentResult(
+                intent=IntentType.LIST_KB,
+                workflow_mode=WorkflowMode.NONE,
+                confidence=0.8,
+                reasoning=f"keyword fallback (list_kb): {err}",
+                extracted_topic=None,
+            )
 
         if has_report:
             return IntentResult(
