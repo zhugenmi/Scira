@@ -65,7 +65,7 @@ export default function PaperSelectionModal({ open, approval, workflowMode, onCl
     }
   }
 
-  const submitLabel = workflowMode === 'full' ? '添加到知识库并生成综述' : '添加到知识库'
+  const submitLabel = '添加到知识库'
 
   const successCount = papers.filter(p => paperStatus[p.paper_id]?.status === 'success').length
   const failedCount = papers.filter(p => paperStatus[p.paper_id]?.status === 'failed').length
@@ -201,9 +201,21 @@ export default function PaperSelectionModal({ open, approval, workflowMode, onCl
 
             {view === 'downloading' && (
               <>
-                <h3 className="text-base font-semibold text-dark-text mb-2">
-                  下载中（{successCount + failedCount}/{papers.length} 完成）
-                </h3>
+                {(() => {
+                  const downloadingPaper = papers.find(p => paperStatus[p.paper_id]?.status === 'downloading')
+                  if (downloadingPaper) {
+                    return (
+                      <h3 className="text-base font-semibold text-dark-text mb-2 truncate">
+                        正在下载：{downloadingPaper.title}...
+                      </h3>
+                    )
+                  }
+                  return (
+                    <h3 className="text-base font-semibold text-dark-text mb-2">
+                      已下载 {successCount + failedCount}/{papers.length} 篇
+                    </h3>
+                  )
+                })()}
                 <div className="w-full h-2 rounded-full bg-dark-border/30 mb-3 overflow-hidden">
                   <div className="h-full bg-primary-500 transition-all" style={{ width: `${progressPct}%` }} />
                 </div>
@@ -243,7 +255,7 @@ export default function PaperSelectionModal({ open, approval, workflowMode, onCl
                   成功下载 {successCount} 篇{failedCount > 0 ? `，失败 ${failedCount} 篇` : ''}
                 </p>
                 {failedCount > 0 && <p className="text-xs text-dark-muted/80">失败论文已跳过，可稍后重试</p>}
-                {workflowMode === 'full' && <p className="text-xs text-dark-muted/80 mt-2">full 模式：正在生成综述…</p>}
+                {workflowMode === 'full' && <p className="text-xs text-dark-muted/80 mt-2">论文已添加到知识库，后续将生成综述。</p>}
                 <div className="flex justify-end mt-4">
                   <button
                     onClick={onClose}
