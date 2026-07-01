@@ -452,6 +452,22 @@ def build_pending_download_papers(
     return pending
 
 
+def list_existing_categories(papers_dir: "Path") -> List[str]:
+    """列出 data/papers/ 下所有已有知识库（子目录名），供前端下拉。"""
+    if not papers_dir.exists():
+        return []
+    return sorted(
+        d.name for d in papers_dir.iterdir()
+        if d.is_dir() and not d.name.startswith(".")
+    )
+
+
+def attach_approval_categories(state: GraphState, papers_dir: "Path") -> None:
+    """把自动匹配的类别 + 已有类别列表写进 state，供 approval 事件透传到前端。"""
+    state["pending_matched_category"] = state.get("current_category") or ""
+    state["pending_categories"] = list_existing_categories(papers_dir)
+
+
 def init_state(state: GraphState) -> GraphState:
     """Initialize the state with user query."""
     # 生成 run_id 并同步到 contextvars，使后续所有日志行带同一 run_id
@@ -812,12 +828,16 @@ def retrieval_node(state: GraphState) -> GraphState:
                     state["literature_data"] = []
                     state["reading_errors"] = []
 
+                    attach_approval_categories(state, papers_dir)
+
                     _emit_progress(
                         "paper_download_approval_request",
                         details={
                             "pending_download_papers": pending,
                             "papers_found": len(state["search_results"]),
                             "already_downloaded": _skipped,
+                            "matched_category": state["pending_matched_category"],
+                            "existing_categories": state["pending_categories"],
                         },
                     )
                 else:
