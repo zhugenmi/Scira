@@ -78,3 +78,33 @@ def test_approval_event_carries_categories(tmp_path, monkeypatch):
     # state 被填充
     assert state["pending_matched_category"] == "diffusion"
     assert state["pending_categories"] == ["diffusion", "gnn"]
+
+
+def test_resolve_target_category_new_name_normalizes():
+    from src.core.workflow import resolve_target_category
+    # 普通新名：归一化（小写 + 下划线）
+    assert resolve_target_category("  Drug Discovery!", None, ["diffusion"]) == "drug_discovery"
+
+
+def test_resolve_target_category_new_name_reuses_existing():
+    from src.core.workflow import resolve_target_category
+    # 归一化后与已有重名 → 复用
+    assert resolve_target_category("Diffusion", None, ["diffusion"]) == "diffusion"
+
+
+def test_resolve_target_category_target_when_no_new_name():
+    from src.core.workflow import resolve_target_category
+    # 无 new_name，用 target_category
+    assert resolve_target_category(None, "gnn", ["diffusion", "gnn"]) == "gnn"
+
+
+def test_resolve_target_category_both_none_returns_none():
+    from src.core.workflow import resolve_target_category
+    # 都 None → 返回 None（调用方走自动匹配）
+    assert resolve_target_category(None, None, ["diffusion"]) is None
+
+
+def test_resolve_target_category_empty_new_name_after_norm():
+    from src.core.workflow import resolve_target_category
+    # 归一化后为空 → 返回 None（前端拦截，但后端也要兜底）
+    assert resolve_target_category("   !!!", None, []) is None

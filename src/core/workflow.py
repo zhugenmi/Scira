@@ -468,6 +468,36 @@ def attach_approval_categories(state: GraphState, papers_dir: "Path") -> None:
     state["pending_categories"] = list_existing_categories(papers_dir)
 
 
+def resolve_target_category(
+    new_category_name: Optional[str],
+    target_category: Optional[str],
+    existing_categories: List[str],
+) -> Optional[str]:
+    """
+    决定本次下载入库到哪个知识库：
+    - new_category_name 非空 → 归一化（小写 + 非字母数字汉字转下划线），重名复用，归一化后为空返回 None
+    - 否则用 target_category（若不在 existing 里也接受，调用方当新建）
+    - 都 None → None（调用方走 state['current_category']）
+    """
+    import re as _re
+
+    if new_category_name and new_category_name.strip():
+        norm = _re.sub(r"[^\w一-鿿\-]", "_", new_category_name.strip().lower())[:80]
+        norm = norm.strip("_") or None
+        if not norm:
+            return None
+        # 与已有重名（大小写无关）→ 复用现有
+        for ex in existing_categories or []:
+            if ex.lower() == norm:
+                return ex
+        return norm
+
+    if target_category and target_category.strip():
+        return target_category.strip()
+
+    return None
+
+
 def init_state(state: GraphState) -> GraphState:
     """Initialize the state with user query."""
     # 生成 run_id 并同步到 contextvars，使后续所有日志行带同一 run_id
