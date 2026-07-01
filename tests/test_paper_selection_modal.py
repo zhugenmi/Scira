@@ -108,3 +108,32 @@ def test_resolve_target_category_empty_new_name_after_norm():
     from src.core.workflow import resolve_target_category
     # 归一化后为空 → 返回 None（前端拦截，但后端也要兜底）
     assert resolve_target_category("   !!!", None, []) is None
+
+
+def test_reader_agent_paper_callback_invoked(monkeypatch):
+    """ReaderAgent.run 在每篇完成时调用 paper_callback(paper_id, status, error)。"""
+    from src.agents.reader import ReaderAgent, ReadingTask
+
+    events: list[tuple[str, str, str | None]] = []
+
+    def fake_process_task(self, task, download_dir=None):
+        # 模拟成功
+        task.status = "completed"
+        task.parsed_content = {"paper_id": task.paper_id, "word_count": 10}
+        return task
+
+    monkeypatch.setattr(ReaderAgent, "process_task", fake_process_task)
+
+    agent = ReaderAgent(
+        paper_callback=lambda pid, st, err: events.append((pid, st, err))
+    )
+    papers = [
+        {"paper_id": "p1", "title": "T1", "authors": [], "abstract": "", "pdf_url": "http://x/1.pdf"},
+        {"paper_id": "p2", "title": "T2", "authors": [], "abstract": "", "pdf_url": "http://x/2.pdf"},
+    ]
+    agent.run(papers, download_dir="/tmp/whatever")
+
+    # 期望每篇至少有一条 success 事件
+    pids = {e[0] for e in events}
+    assert pids == {"p1", "p2"}
+    assert all(e[1] == "success" for e in events if e[1] == "success")

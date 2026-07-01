@@ -166,6 +166,7 @@ class ReaderAgent:
         config: Optional[SciraConfig] = None,
         backend: ParserBackend = ParserBackend.PYMUPDF,
         max_workers: int = 4,
+        paper_callback=None,
     ):
         """
         Initialize Reader Agent.
@@ -174,12 +175,14 @@ class ReaderAgent:
             config: Scira config
             backend: PDF parsing backend
             max_workers: Max parallel workers
+            paper_callback: 可选回调 (paper_id, status, error)，status ∈
+                {"downloading","success","failed"}。每篇下载完成/失败时调用。
         """
         self.config = config or get_config()
         self.backend = backend
         self.max_workers = max_workers
         self.pdf_parser = PDFParser(backend=backend)
-        # 不再使用本地arxiv_client，通过MCP API下载
+        self.paper_callback = paper_callback
 
     def create_tasks(self, papers: List[Dict[str, Any]]) -> List[ReadingTask]:
         """
@@ -511,20 +514,31 @@ Word Count: {content.get('word_count', 0)}
         workers = max_workers or self.max_workers
         processed = []
 
+        def _emit(task: ReadingTask, status: str, error: Optional[str] = None):
+            if self.paper_callback:
+                try:
+                    self.paper_callback(task.paper_id, status, error)
+                except Exception:
+                    pass
+
         with ThreadPoolExecutor(max_workers=workers) as executor:
-            # 使用 partial 传递 download_dir
             task_func = partial(self.process_task, download_dir=download_dir)
             futures = {executor.submit(task_func, task): task for task in tasks}
 
             for future in as_completed(futures):
+                task = futures[future]
                 try:
                     result = future.result()
                     processed.append(result)
+                    if result.status == "completed":
+                        _emit(result, "success", None)
+                    elif result.status == "failed":
+                        _emit(result, "failed", result.error)
                 except Exception as e:
-                    task = futures[future]
                     task.status = "failed"
                     task.error = str(e)
                     processed.append(task)
+                    _emit(task, "failed", str(e))
 
         return processed
 
