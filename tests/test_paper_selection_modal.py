@@ -216,3 +216,25 @@ def test_run_download_and_rest_short_circuits_on_empty(monkeypatch, tmp_path):
     wf.run_download_and_rest(state, [{"paper_id": "p1"}], progress_callback=lambda *a, **k: None)
 
     assert reading_called == [], "literature_data 为空时不应进入 reading_node"
+
+
+def test_progress_callback_enqueues_per_paper_events():
+    """make_workflow_progress_callback 检测 details['per_paper'] 并 append 到 task['event_queue']。"""
+    from src.mcp.server import make_workflow_progress_callback, workflow_tasks
+
+    task_id = "t-evt"
+    workflow_tasks[task_id] = {
+        "status": "running", "phase": "download", "progress": 0.3,
+        "details": {"message": "downloading"},
+        "event_queue": __import__("collections").deque(),
+    }
+    cb = make_workflow_progress_callback(task_id)
+    cb("download", 0.3, "downloading", {"per_paper": {"paper_id": "p1", "status": "success", "error": None}})
+    cb("download", 0.3, "downloading", {"per_paper": {"paper_id": "p2", "status": "failed", "error": "403"}})
+    cb("download", 0.4, "msg", {"papers_downloading": 1})  # 非 per_paper，不应入队
+
+    q = workflow_tasks[task_id]["event_queue"]
+    assert len(q) == 2
+    assert q[0]["paper_id"] == "p1" and q[0]["status"] == "success"
+    assert q[1]["paper_id"] == "p2" and q[1]["status"] == "failed"
+
