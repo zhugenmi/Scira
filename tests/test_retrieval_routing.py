@@ -74,3 +74,70 @@ def test_analyze_query_missing_domain_falls_back_to_general():
         result = agent.analyze_query("diffusion models")
 
     assert result["domain"] == "general"
+
+
+def _make_strategy(domain: str = "general", has_chinese: bool = False) -> SearchStrategy:
+    return SearchStrategy(
+        keywords=["test"],
+        boolean_query='"test"',
+        categories=[],
+        date_range=("2024-01-01", "2026-01-01"),
+        max_results=10,
+        rationale="test",
+        domain=domain,
+        has_chinese=has_chinese,
+    )
+
+
+def test_execute_search_uses_computed_sources_for_medical():
+    """execute_search should post sources containing pubmed (not dblp) for medical domain."""
+    agent = RetrievalAgent()
+    strategy = _make_strategy(domain="medical", has_chinese=False)
+    with patch("src.agents.retrieval.requests.post") as mock_post, \
+         patch.dict("os.environ", {}, clear=False):
+        mock_post.return_value.json.return_value = {"papers": []}
+        mock_post.return_value.raise_for_status.return_value = None
+        agent.execute_search(strategy)
+    posted_payload = mock_post.call_args[1]["json"]
+    sources = posted_payload["sources"].split(",")
+    assert "pubmed" in sources
+    assert "dblp" not in sources
+    assert sources != ["all"]
+
+
+def test_execute_search_uses_computed_sources_for_cs_with_chinese():
+    """CS query with Chinese text should add wanfang when enabled."""
+    agent = RetrievalAgent()
+    strategy = _make_strategy(domain="computer_science", has_chinese=True)
+    env = {"WFDATA_APP_KEY": "k", "WFDATA_APP_CODE": "c", "APAPER_MCP_ENABLED": "1"}
+    with patch("src.agents.retrieval.requests.post") as mock_post, \
+         patch.dict("os.environ", env, clear=False):
+        mock_post.return_value.json.return_value = {"papers": []}
+        mock_post.return_value.raise_for_status.return_value = None
+        agent.execute_search(strategy)
+    posted_payload = mock_post.call_args[1]["json"]
+    sources = posted_payload["sources"].split(",")
+    assert "dblp" in sources
+    assert "wanfang" in sources
+    assert "cnki" in sources
+
+
+def test_execute_search_omits_cn_when_disabled():
+    """No CN env vars → no wanfang/cnki in sources, even for Chinese medical query."""
+    agent = RetrievalAgent()
+    strategy = _make_strategy(domain="medical", has_chinese=True)
+    with patch("src.agents.retrieval.requests.post") as mock_post, \
+         patch.dict("os.environ", {}, clear=True):
+        mock_post.return_value.json.return_value = {"papers": []}
+        mock_post.return_value.raise_for_status.return_value = None
+        agent.execute_search(strategy)
+    posted_payload = mock_post.call_args[1]["json"]
+    sources = posted_payload["sources"].split(",")
+    assert "wanfang" not in sources
+    assert "cnki" not in sources
+
+
+def test_search_strategy_has_domain_and_has_chinese_fields():
+    s = _make_strategy(domain="biology", has_chinese=True)
+    assert s.domain == "biology"
+    assert s.has_chinese is True

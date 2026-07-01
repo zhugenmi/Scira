@@ -41,6 +41,8 @@ class SearchStrategy:
     date_range: Tuple[str, str]
     max_results: int
     rationale: str
+    domain: str = "general"
+    has_chinese: bool = False
 
 
 @dataclass
@@ -137,13 +139,16 @@ class RetrievalAgent:
         self,
         topic: str,
         key_concepts: List[str],
+        domain: str = "general",
+        has_chinese: bool = False,
     ) -> SearchStrategy:
-        """
-        Generate search strategy from topic analysis.
+        """Generate search strategy from topic analysis.
 
         Args:
             topic: Normalized research topic
             key_concepts: Key concepts from query analysis
+            domain: Classified domain (one of domain_routing.VALID_DOMAINS).
+            has_chinese: Whether the original user query contained Chinese characters.
 
         Returns:
             SearchStrategy object
@@ -176,6 +181,8 @@ class RetrievalAgent:
             date_range=(start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d")),
             max_results=self.config.max_literature_count,
             rationale=f"Search for {topic} with focus on recent papers (last 2 years)",
+            domain=domain,
+            has_chinese=has_chinese,
         )
 
     def execute_search(self, strategy: SearchStrategy) -> List[Dict[str, Any]]:
@@ -193,13 +200,30 @@ class RetrievalAgent:
         logger.info(f"Max results: {strategy.max_results}")
 
         try:
+            # 按领域路由检索源，替代 sources="all"。CN 源仅在凭据配置时追加。
+            from src.mcp.paper_search_mcp.domain_routing import sources_for_domain
+
+            def _env_nonempty(key: str) -> bool:
+                return bool(os.getenv(key, "").strip())
+
+            def _env_truthy(key: str) -> bool:
+                return os.getenv(key, "").strip().lower() in ("1", "true")
+
+            sources = sources_for_domain(
+                strategy.domain,
+                has_chinese=strategy.has_chinese,
+                wanfang_enabled=_env_nonempty("WFDATA_APP_KEY") and _env_nonempty("WFDATA_APP_CODE"),
+                cnki_enabled=_env_truthy("APAPER_MCP_ENABLED"),
+            )
+            logger.info(f"Domain routing: domain={strategy.domain}, sources={sources}")
+
             # 调用MCP API搜索论文
             response = requests.post(
                 f"{self.mcp_api_base}/search",
                 json={
                     "query": strategy.boolean_query,
                     "max_results": strategy.max_results,
-                    "sources": "all",
+                    "sources": ",".join(sources),
                 },
                 timeout=60
             )
@@ -320,10 +344,15 @@ class RetrievalAgent:
         """
         errors = []
 
+        has_chinese = any('一' <= char <= '鿿' for char in user_query)
+
         # Step 1: Analyze query（若已有审批通过的 topic/keywords 则跳过，直接复用）
         if approved_topic:
             topic = approved_topic.strip()
             key_concepts = approved_keywords or []
+            # 审批路径无新 LLM 调用，domain 取 general 兜底（审批时已检索过，路由影响小）；
+            # has_chinese 仍按原查询判定，保证 CN 源在中文查询下能被追加。
+            domain = "general"
             logger.info(f"=== Step 1: Using APPROVED conditions (skip analyze) | topic='{topic}', concepts={key_concepts} ===")
         else:
             logger.info("=== Step 1: Analyzing query ===")
@@ -331,6 +360,7 @@ class RetrievalAgent:
                 analysis = self.analyze_query(user_query)
                 topic = analysis.get("normalized_topic", user_query)
                 key_concepts = analysis.get("key_concepts", [])
+                domain = analysis.get("domain", "general")
 
                 # If translation happened, use translated query
                 if "translated_query" in analysis:
@@ -340,12 +370,13 @@ class RetrievalAgent:
                 if any('一' <= char <= '鿿' for char in topic):
                     topic = self._simple_translate(user_query)
 
-                logger.info(f"Query analysis complete: topic='{topic}', key_concepts={key_concepts}")
+                logger.info(f"Query analysis complete: topic='{topic}', key_concepts={key_concepts}, domain={domain}")
             except Exception as e:
                 errors.append(f"Query analysis failed: {e}")
                 # Fallback translation
                 topic = self._simple_translate(user_query)
                 key_concepts = []
+                domain = "general"
                 logger.warning(f"Query analysis failed, using fallback: {e}")
 
         # 兜底：topic 为空（如翻译失败）时回退到 user_query，避免用空串检索
@@ -355,8 +386,13 @@ class RetrievalAgent:
 
         # Step 2: Generate search strategy
         logger.info("=== Step 2: Generating search strategy ===")
-        strategy = self.generate_search_strategy(topic, key_concepts)
-        logger.info(f"Search strategy generated: {len(strategy.keywords)} keywords")
+        strategy = self.generate_search_strategy(
+            topic, key_concepts, domain=domain, has_chinese=has_chinese
+        )
+        logger.info(
+            f"Search strategy generated: {len(strategy.keywords)} keywords, "
+            f"domain={strategy.domain}, has_chinese={strategy.has_chinese}"
+        )
 
         # Step 3: Execute search
         logger.info("=== Step 3: Executing arXiv search ===")
