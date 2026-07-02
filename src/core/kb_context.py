@@ -3,9 +3,7 @@
 
 供 AI 报告编辑流程与 Orchestrator 普通对话路径共用，把 KB 状态注入 LLM 上下文。
 """
-from typing import Any, Dict, List, Optional
-
-from src.core.knowledge import list_knowledge_bases, search_papers
+from src.core.knowledge import list_knowledge_bases
 from src.utils.logger import get_logger
 
 logger = get_logger("kb_context")
