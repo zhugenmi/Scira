@@ -75,8 +75,11 @@ class TestCAJParser:
         parsed = PDFParser().parse(str(out), "test")
         assert "Hello CAJ disguise test" in parsed.title
 
-    def test_convert_true_binary_caj_without_lib_raises(self, tmp_caj_binary, tmp_path):
+    def test_convert_true_binary_caj_without_lib_raises(self, tmp_caj_binary, tmp_path, monkeypatch):
         """caj2pdf 未安装时，真正二进制 CAJ 应抛 CAJParseError。"""
+        import builtins
+        import subprocess
+
         try:
             import caj2pdf  # noqa: F401
         except ImportError:
@@ -86,6 +89,26 @@ class TestCAJParser:
 
         out = tmp_path / "out.pdf"
         if expect_error:
+            # Mock: caj2pdf import 失败
+            original_import = builtins.__import__
+
+            def mock_import(name, *args, **kwargs):
+                if name == "caj2pdf" or name.startswith("caj2pdf."):
+                    raise ImportError("No module named 'caj2pdf'")
+                return original_import(name, *args, **kwargs)
+
+            monkeypatch.setattr(builtins, "__import__", mock_import)
+
+            # Mock: pip install 失败，不碰真实环境
+            original_run = subprocess.run
+
+            def mock_run(cmd, **kwargs):
+                if "pip" in str(cmd) and "caj2pdf" in str(cmd):
+                    raise subprocess.CalledProcessError(1, cmd)
+                return original_run(cmd, **kwargs)
+
+            monkeypatch.setattr(subprocess, "run", mock_run)
+
             with pytest.raises(CAJParseError) as exc_info:
                 convert_caj_to_pdf(str(tmp_caj_binary), str(out))
             assert "caj2pdf" in str(exc_info.value)
