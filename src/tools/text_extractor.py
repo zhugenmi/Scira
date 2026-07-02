@@ -126,7 +126,7 @@ class PaperTextExtractor:
             self._install_paddleocr()
             from paddleocr import PaddleOCR
 
-        self._ocr = PaddleOCR(lang=self._ocr_lang, use_angle_cls=True)
+        self._ocr = PaddleOCR(lang=self._ocr_lang, use_textline_orientation=True)
         return self._ocr
 
     def _install_paddleocr(self):
