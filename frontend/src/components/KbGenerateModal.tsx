@@ -81,7 +81,7 @@ export default function KbGenerateModal({ open, onClose, onSubmit, submitting, e
               </div>
             ) : topics.length === 0 ? (
               <div className="text-xs text-dark-muted py-4">
-                暂无知识库。请先通过聊天检索论文建立知识库。
+                暂无知识库。请先建立知识库。
               </div>
             ) : (
               <div className="space-y-1.5 max-h-60 overflow-auto">
@@ -124,7 +124,7 @@ export default function KbGenerateModal({ open, onClose, onSubmit, submitting, e
               disabled={submitting}
             />
             <div className="text-[11px] text-dark-muted mt-1">
-              助手将阅读所选知识库中的精读结果（不重新检索/下载），生成综述并引用这些论文。
+              助手将阅读所选知识库中的文献，生成综述报告并引用这些论文。
             </div>
           </div>
 
@@ -154,7 +154,7 @@ export default function KbGenerateModal({ open, onClose, onSubmit, submitting, e
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary-500 hover:bg-primary-600 disabled:bg-dark-border disabled:text-dark-muted text-white text-xs transition-colors"
             >
               {submitting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
-              开始生成
+              生成报告
             </button>
           </div>
         </div>

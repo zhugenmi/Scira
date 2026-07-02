@@ -12,6 +12,7 @@ import { OutlineCard } from './cards/OutlineCard'
 import { WritingCard } from './cards/WritingCard'
 import { ReviewCard } from './cards/ReviewCard'
 import { InlineTimer } from './cards/CardTimer'
+import MessageErrorBoundary from './MessageErrorBoundary'
 
 interface RetrievalConditions {
   task_id?: string
@@ -156,6 +157,16 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
   // 保存 messages 的最新引用，供 SSE 回调内读取（回调闭包会捕获旧 state）
   const messagesRef = useRef<Message[]>(messages)
   useEffect(() => { messagesRef.current = messages }, [messages])
+  // 保存 sessionId 的最新引用：SSE 回调（outline_result/writing_done/review_result 里
+  // 回写卡片）需要拿「当前」sessionId，但回调闭包捕获的是注册时的旧值——
+  // 知识库生成场景下 sessionId 在 POST 返回后才更新，闭包里会是 null → 卡片 404。
+  const sessionIdRef = useRef<string | null>(sessionId)
+  useEffect(() => { sessionIdRef.current = sessionId }, [sessionId])
+  // 工作流是否已 complete/error：阻止 onerror 在连接关闭后误触发轮询回退。
+  // SSE complete 后浏览器仍可能 fire onerror（尝试重连），若此时 status 闭包仍是
+  // 'running'，会启动 polling——polling 的 complete 不写卡片、content 用占位符覆盖，
+  // 表现为「页面清空 + 卡片丢失」。用 ref 而非闭包变量判断。
+  const workflowDoneRef = useRef(false)
 
   // 加载会话列表
   const loadSessions = async () => {
@@ -304,6 +315,7 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
     }
 
     setStatus('running')
+    workflowDoneRef.current = false
 
     // 建立 SSE 连接
     const eventSource = new EventSource(`/api/workflow/stream/${taskId}`)
@@ -333,13 +345,14 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
 
           case 'phase': {
             const phaseName = data.data?.phase
+            const phaseMsg = data.data?.message || ''
             // retrieval 阶段开始：启动检索计时
             if (phaseName === 'retrieval') {
               setPhaseTimer(assistantMessageId, 'retrieval', 'start', Date.now())
             }
             setMessages(prev => prev.map(msg =>
               msg.id === assistantMessageId
-                ? { ...msg, workflowStatus: data.data?.message || '' }
+                ? { ...msg, content: phaseMsg || msg.content, workflowStatus: phaseMsg || '' }
                 : msg
             ))
             break
@@ -381,25 +394,29 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
             break
           }
 
-          case 'reading':
+          case 'reading': {
             // KB-based 工作流在 reading 阶段加载精读结果，等价于检索完成
+            const readingMsg = data.data?.message || '阅读论文中...'
             setMessages(prev => prev.map(msg =>
               msg.id === assistantMessageId
-                ? { ...msg, workflowStatus: data.data?.message || '阅读论文中...' }
+                ? { ...msg, content: readingMsg, workflowStatus: readingMsg }
                 : msg
             ))
             break
+          }
 
           case 'generation': {
             const stage = data.data?.stage
             const now = Date.now()
+            const genMsg = data.data?.message || ''
             if (stage === 'outline') {
               // 大纲阶段开始：渲染占位卡片 + 启动计时
               setMessages(prev => prev.map(msg =>
                 msg.id === assistantMessageId
                   ? {
                       ...msg,
-                      workflowStatus: data.data?.message || '生成论文大纲中...',
+                      content: genMsg || msg.content,
+                      workflowStatus: genMsg || '生成论文大纲中...',
                       outlineCard: { ...(msg.outlineCard || {}), expanded: true, generating: true, timerStart: msg.outlineCard?.timerStart || now },
                     }
                   : msg
@@ -411,7 +428,8 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
                 msg.id === assistantMessageId
                   ? {
                       ...msg,
-                      workflowStatus: data.data?.message || '论文写作中...',
+                      content: genMsg || msg.content,
+                      workflowStatus: genMsg || '论文写作中...',
                       writingCard: {
                         content: msg.writingCard?.content || '',
                         done: false,
@@ -428,7 +446,8 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
                 msg.id === assistantMessageId
                   ? {
                       ...msg,
-                      workflowStatus: data.data?.message || '论文审查中...',
+                      content: genMsg || msg.content,
+                      workflowStatus: genMsg || '论文审查中...',
                       reviewCard: { ...(msg.reviewCard || {}), expanded: true, generating: true, timerStart: msg.reviewCard?.timerStart || now },
                     }
                   : msg
@@ -436,7 +455,7 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
             } else {
               setMessages(prev => prev.map(msg =>
                 msg.id === assistantMessageId
-                  ? { ...msg, workflowStatus: data.data?.message || '生成报告中...' }
+                  ? { ...msg, content: genMsg || msg.content, workflowStatus: genMsg || '生成报告中...' }
                   : msg
               ))
             }
@@ -460,7 +479,7 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
                   }
                 : msg
             ))
-            fetch(`/api/chat/session/${sessionId}/card`, {
+            fetch(`/api/chat/session/${sessionIdRef.current}/card`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ card_type: 'outline', payload: data.data || {} }),
@@ -503,7 +522,7 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
                   }
                 : msg
             ))
-            fetch(`/api/chat/session/${sessionId}/card`, {
+            fetch(`/api/chat/session/${sessionIdRef.current}/card`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ card_type: 'writing', payload: { content: data.data?.paper_content || '', done: true } }),
@@ -528,7 +547,7 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
                   }
                 : msg
             ))
-            fetch(`/api/chat/session/${sessionId}/card`, {
+            fetch(`/api/chat/session/${sessionIdRef.current}/card`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ card_type: 'review', payload: data.data || {} }),
@@ -573,6 +592,7 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
             setStatus('completed')
             eventSource.close()
             eventSourceRef.current = null
+            workflowDoneRef.current = true
 
             const topic = data.data?.topic || ''
             const mode = data.data?.workflow_mode || 'full'
@@ -613,12 +633,42 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
               }
               return changed ? { ...msg, content: completeText, workflowStatus: undefined, phaseTimers: timers } : { ...msg, content: completeText, workflowStatus: undefined }
             }))
+            // 兜底持久化卡片：若 outline_result/writing_done/review_result 的单独 POST
+            // 因时序或网络问题没成功，complete 时再补发一次，确保刷新后卡片仍在。
+            const sid = sessionIdRef.current
+            if (sid) {
+              const final = messagesRef.current.find(m => m.id === assistantMessageId)
+              if (final) {
+                if (final.outlineCard) {
+                  fetch(`/api/chat/session/${sid}/card`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ card_type: 'outline', payload: { ...final.outlineCard, expanded: false } }),
+                  }).catch(() => {})
+                }
+                if (final.writingCard) {
+                  fetch(`/api/chat/session/${sid}/card`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ card_type: 'writing', payload: { content: final.writingCard.content, done: true } }),
+                  }).catch(() => {})
+                }
+                if (final.reviewCard) {
+                  fetch(`/api/chat/session/${sid}/card`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ card_type: 'review', payload: { ...final.reviewCard, expanded: false } }),
+                  }).catch(() => {})
+                }
+              }
+            }
             break
 
           case 'error':
             setStatus('failed')
             eventSource.close()
             eventSourceRef.current = null
+            workflowDoneRef.current = true
 
             setMessages(prev => prev.map(msg =>
               msg.id === assistantMessageId
@@ -637,8 +687,9 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
       eventSource.close()
       eventSourceRef.current = null
 
-      // 如果连接错误，尝试回退到轮询
-      if (status === 'running') {
+      // complete/error 已处理过就不要再走轮询回退——否则 polling 的 complete 会用
+      // 占位符覆盖 final_report、且不写卡片，造成「页面清空 + 卡片丢失」。
+      if (!workflowDoneRef.current) {
         console.log('SSE connection failed, falling back to polling')
         startWorkflowPolling(taskId, assistantMessageId)
       }
@@ -817,10 +868,10 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
                 currentContent += data.data?.token || ''
                 // 保留 workflowStatus：响应期间持续显示状态（如「thinking...」+ 旋转图标），
                 // 避免长耗时阶段（如论文精读的 analyze_paper）页面看起来静止。
-                // 仅在尚无具体状态时设一个通用的「正在思考...」。
+                // 仅在尚无具体状态时设一个通用的「thinking...」。
                 setMessages(prev => prev.map(msg =>
                   msg.id === assistantMessageId
-                    ? { ...msg, content: currentContent, workflowStatus: msg.workflowStatus || '正在思考...' }
+                    ? { ...msg, content: currentContent, workflowStatus: msg.workflowStatus || 'thinking...' }
                     : msg
                 ))
                 break
@@ -835,6 +886,8 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
                 ))
                 if (data.data?.session_id && !sessionId) {
                   setSessionId(data.data.session_id)
+                  // 同步 ref，供紧随其后的 SSE 回调（startWorkflowSSE 写卡片）使用
+                  sessionIdRef.current = data.data.session_id
                 }
                 break
 
@@ -1086,7 +1139,9 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
     setMessages(prev => [...prev, {
       id: assistantMessageId,
       role: 'assistant',
-      content: '',
+      // 给气泡填初值，避免工作期间气泡空白：随 SSE phase 事件逐步更新叙述，
+      // complete 时被 final_report 覆盖。
+      content: `好的，我将基于所选知识库（${categories.join(', ')}）生成「${topic}」的综述。\n\n正在加载知识库精读结果...`,
       timestamp: new Date(),
       workflowStatus: '正在加载知识库精读结果...',
       phaseTimers: { retrieval: { start: Date.now() } },
@@ -1103,6 +1158,9 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
       }
       if (data.session_id && !sessionId) {
         setSessionId(data.session_id)
+        // 同步 ref：setSessionId 是异步状态更新，但 startWorkflowSSE 会立刻被调用，
+        // SSE 回调（写卡片）需要拿到最新 sessionId，不能等 useEffect 同步 ref。
+        sessionIdRef.current = data.session_id
       }
       setKbModalOpen(false)
       setStatus('running')
@@ -1333,31 +1391,44 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
                     : 'bg-dark-surface border border-dark-border text-dark-text'
                 }`}>
                 {message.role === 'assistant' ? (
-                  <div className="prose-chat">
-                    <ReactMarkdown
-                      remarkPlugins={[remarkGfm, remarkMath]}
-                      rehypePlugins={[rehypeKatex]}
-                      components={{
-                        h1: ({ children }) => <h1 className="text-lg font-bold text-dark-text border-b border-dark-border pb-2 mb-3 mt-2">{children}</h1>,
-                        h2: ({ children }) => <h2 className="text-base font-bold text-primary-400 mt-4 mb-2">{children}</h2>,
-                        h3: ({ children }) => <h3 className="text-sm font-semibold text-dark-text mt-3 mb-1.5">{children}</h3>,
-                        p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
-                        ul: ({ children }) => <ul className="list-disc list-inside space-y-1 mb-2">{children}</ul>,
-                        ol: ({ children }) => <ol className="list-decimal list-inside space-y-1 mb-2">{children}</ol>,
-                        li: ({ children }) => <li className="leading-relaxed">{children}</li>,
-                        strong: ({ children }) => <strong className="font-semibold text-dark-text">{children}</strong>,
-                        em: ({ children }) => <em className="italic">{children}</em>,
-                        code: ({ children }) => <code className="bg-dark-border/50 px-1 py-0.5 rounded text-xs">{children}</code>,
-                        pre: ({ children }) => <pre className="bg-dark-border/30 p-2 rounded text-xs overflow-x-auto mb-2">{children}</pre>,
-                        blockquote: ({ children }) => <blockquote className="border-l-2 border-primary-400 pl-3 text-dark-muted mb-2">{children}</blockquote>,
-                        table: ({ children }) => <table className="border-collapse mb-2 text-xs">{children}</table>,
-                        th: ({ children }) => <th className="border border-dark-border px-2 py-1 bg-dark-border/30">{children}</th>,
-                        td: ({ children }) => <td className="border border-dark-border px-2 py-1">{children}</td>,
-                      }}
-                    >
-                      {message.content}
-                    </ReactMarkdown>
-                  </div>
+                  <MessageErrorBoundary
+                    label="综述内容"
+                    fallback={(_err, reset) => (
+                      <div className="text-xs space-y-2">
+                        <div className="text-red-400 bg-red-400/10 border border-red-400/20 rounded-lg px-3 py-2">
+                          综述渲染失败（可能是公式格式异常）。可查看下方纯文本，或
+                          <button onClick={reset} className="underline px-1">重试渲染</button>。
+                        </div>
+                        <pre className="whitespace-pre-wrap text-dark-text/80 text-xs max-h-96 overflow-auto">{message.content}</pre>
+                      </div>
+                    )}
+                  >
+                    <div className="prose-chat">
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm, remarkMath]}
+                        rehypePlugins={[rehypeKatex]}
+                        components={{
+                          h1: ({ children }) => <h1 className="text-lg font-bold text-dark-text border-b border-dark-border pb-2 mb-3 mt-2">{children}</h1>,
+                          h2: ({ children }) => <h2 className="text-base font-bold text-primary-400 mt-4 mb-2">{children}</h2>,
+                          h3: ({ children }) => <h3 className="text-sm font-semibold text-dark-text mt-3 mb-1.5">{children}</h3>,
+                          p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+                          ul: ({ children }) => <ul className="list-disc list-inside space-y-1 mb-2">{children}</ul>,
+                          ol: ({ children }) => <ol className="list-decimal list-inside space-y-1 mb-2">{children}</ol>,
+                          li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+                          strong: ({ children }) => <strong className="font-semibold text-dark-text">{children}</strong>,
+                          em: ({ children }) => <em className="italic">{children}</em>,
+                          code: ({ children }) => <code className="bg-dark-border/50 px-1 py-0.5 rounded text-xs">{children}</code>,
+                          pre: ({ children }) => <pre className="bg-dark-border/30 p-2 rounded text-xs overflow-x-auto mb-2">{children}</pre>,
+                          blockquote: ({ children }) => <blockquote className="border-l-2 border-primary-400 pl-3 text-dark-muted mb-2">{children}</blockquote>,
+                          table: ({ children }) => <table className="border-collapse mb-2 text-xs">{children}</table>,
+                          th: ({ children }) => <th className="border border-dark-border px-2 py-1 bg-dark-border/30">{children}</th>,
+                          td: ({ children }) => <td className="border border-dark-border px-2 py-1">{children}</td>,
+                        }}
+                      >
+                        {message.content}
+                      </ReactMarkdown>
+                    </div>
+                  </MessageErrorBoundary>
                 ) : (
                   <span className="whitespace-pre-wrap">{message.content}</span>
                 )}

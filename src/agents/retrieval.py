@@ -12,7 +12,7 @@ import json
 import requests
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate
@@ -258,15 +258,19 @@ class RetrievalAgent:
         Returns:
             List of selected paper IDs
         """
-        # Sort by published date (newer first)
+        # Sort by published date (newer first). Normalize all datetimes to
+        # offset-aware UTC so naive and aware values can be compared.
         def get_published_date(p):
             date_str = p.get("published", p.get("published_date", ""))
             if date_str:
                 try:
-                    return datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+                    dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    return dt
                 except:
                     pass
-            return datetime.min
+            return datetime.min.replace(tzinfo=timezone.utc)
 
         sorted_papers = sorted(
             papers,
