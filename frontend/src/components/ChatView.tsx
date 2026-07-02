@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Send, Sparkles, Bot, User, Loader2, Plus, Trash2, MessageSquare, Clock, Check, X, BookOpen } from 'lucide-react'
+import { Send, Sparkles, Bot, User, Loader2, Plus, Trash2, MessageSquare, Clock, Check, X, BookOpen, AlertCircle } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
@@ -150,9 +150,13 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
   const [showSessions, setShowSessions] = useState(false)
   const [modalOpen, setModalOpen] = useState<{ msgId: string } | null>(null)
   const [kbModalOpen, setKbModalOpen] = useState(false)
+  const [toast, setToast] = useState<{ kind: 'info' | 'success' | 'error'; text: string } | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const messagesContainerRef = useRef<HTMLDivElement>(null)
+  // 用户是否贴近底部：仅在贴近时自动滚动，避免用户向上翻阅历史时被强制拉回。
+  const isNearBottomRef = useRef(true)
   const inputRef = useRef<HTMLTextAreaElement>(null)
-  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
+  const pollIntervalRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const eventSourceRef = useRef<EventSource | null>(null)
   // 保存 messages 的最新引用，供 SSE 回调内读取（回调闭包会捕获旧 state）
   const messagesRef = useRef<Message[]>(messages)
@@ -271,8 +275,22 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }
 
+  // 监听消息容器滚动：用户向上翻阅时关掉自动滚动，回到底部附近再打开
   useEffect(() => {
-    scrollToBottom()
+    const el = messagesContainerRef.current
+    if (!el) return
+    const onScroll = () => {
+      const threshold = 80 // 距底 80px 内视为"贴近底部"
+      isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < threshold
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [])
+
+  useEffect(() => {
+    if (isNearBottomRef.current) {
+      scrollToBottom()
+    }
   }, [messages])
 
   // Cleanup polling/SSE on unmount
@@ -596,7 +614,6 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
 
             const topic = data.data?.topic || ''
             const mode = data.data?.workflow_mode || 'full'
-            const papersFound = data.data?.papers_found ?? 0
             const papersDownloaded = data.data?.papers_downloaded ?? 0
             const summary = data.data?.summary || ''
             let completeText: string
@@ -724,7 +741,6 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
 
           const researchTopic = data.result?.topic || ''
           const pollMode = data.result?.workflow_mode || 'full'
-          const pollFound = data.result?.papers_found ?? 0
           const pollDownloaded = data.result?.papers_downloaded ?? 0
           const pollSummary = data.result?.summary || ''
           let pollCompleteText: string
@@ -937,6 +953,22 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
                     : msg
                 ))
                 break
+
+              case 'edit_warning':
+                setToast({ kind: 'error', text: data.data?.message || '编辑提示' })
+                setTimeout(() => setToast(null), 5000)
+                break
+
+              case 'file_written': {
+                const fw = data.data || {}
+                if (fw.error) {
+                  setToast({ kind: 'error', text: `写回失败：${fw.error}` })
+                } else {
+                  setToast({ kind: 'success', text: `已写回 ${fw.filename || '原文件'}` })
+                }
+                setTimeout(() => setToast(null), 5000)
+                break
+              }
             }
           } catch (err) {
             // 忽略解析错误
@@ -1273,6 +1305,18 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
 
   return (
     <div className="h-full flex flex-col">
+      {/* 编辑流程 toast */}
+      {toast && (
+        <div className={`fixed top-16 right-6 z-50 px-4 py-2.5 rounded-lg shadow-xl border text-sm flex items-center gap-2 ${
+          toast.kind === 'success' ? 'bg-green-500/20 border-green-500/50 text-green-300'
+          : toast.kind === 'error' ? 'bg-red-500/20 border-red-500/50 text-red-300'
+          : 'bg-dark-surface border-dark-border text-dark-text'
+        }`}>
+          {toast.kind === 'success' ? <Check className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />}
+          <span>{toast.text}</span>
+          <button onClick={() => setToast(null)} className="ml-2 text-current opacity-60 hover:opacity-100">×</button>
+        </div>
+      )}
       {/* 顶部会话管理栏 */}
       <div className="flex items-center justify-between px-4 py-2 border-b border-dark-border bg-dark-surface/50">
         <div className="flex items-center gap-2">
@@ -1360,7 +1404,7 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
       </AnimatePresence>
 
       {/* 消息区域 */}
-      <div className="flex-1 overflow-auto p-4 space-y-4">
+      <div ref={messagesContainerRef} className="flex-1 overflow-auto p-4 space-y-4">
         {messages.map((message) => (
           <motion.div
             key={message.id}
@@ -1391,6 +1435,13 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
                     : 'bg-dark-surface border border-dark-border text-dark-text'
                 }`}>
                 {message.role === 'assistant' ? (
+                  (!message.content || !message.content.trim()) && message.workflowStatus ? (
+                    <div className="flex items-center gap-1 py-1" aria-label="助手正在思考">
+                      <span className="w-1.5 h-1.5 rounded-full bg-dark-muted/70 animate-bounce" style={{ animationDelay: '0ms' }} />
+                      <span className="w-1.5 h-1.5 rounded-full bg-dark-muted/70 animate-bounce" style={{ animationDelay: '150ms' }} />
+                      <span className="w-1.5 h-1.5 rounded-full bg-dark-muted/70 animate-bounce" style={{ animationDelay: '300ms' }} />
+                    </div>
+                  ) : (
                   <MessageErrorBoundary
                     label="综述内容"
                     fallback={(_err, reset) => (
@@ -1429,6 +1480,7 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
                       </ReactMarkdown>
                     </div>
                   </MessageErrorBoundary>
+                  )
                 ) : (
                   <span className="whitespace-pre-wrap">{message.content}</span>
                 )}

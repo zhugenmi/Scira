@@ -2,8 +2,8 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   BookOpen, Search, ChevronRight, FileText, Calendar, User, Users,
-  Tag, X, ExternalLink, File, PanelLeftClose, PanelLeft, Maximize2,
-  Minimize2, ArrowLeft, FolderOpen, FolderClosed, Copy, Check,
+  Tag, ExternalLink, File, PanelLeftClose, PanelLeft, Maximize2,
+  ArrowLeft, FolderOpen, FolderClosed, Copy, Check,
   Trash2, Plus, Upload, Type, Download, Sparkles, Microscope, Globe, BookOpenCheck, ChevronDown
 } from 'lucide-react'
 
@@ -52,7 +52,6 @@ interface KnowledgeBaseProps {
 export default function KnowledgeBase({ onReadPaper }: KnowledgeBaseProps) {
   const [topics, setTopics] = useState<TopicGroup[]>([])
   const [selectedTopic, setSelectedTopic] = useState<string | null>(null)
-  const [loading, setLoading] = useState(true)
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedPaper, setSelectedPaper] = useState<Paper | null>(null)
   const [activeTab, setActiveTab] = useState<'detail' | 'pdf'>('detail')
@@ -123,7 +122,6 @@ export default function KnowledgeBase({ onReadPaper }: KnowledgeBaseProps) {
     } catch (error) {
       console.error('加载知识库失败:', error)
     }
-    setLoading(false)
   }, [selectedTopic])
 
   useEffect(() => {

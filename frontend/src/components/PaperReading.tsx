@@ -8,11 +8,11 @@ import 'katex/dist/katex.min.css'
 import {
   Upload, FileText, BookOpen, Search, Play, Settings,
   Loader2, AlertCircle, X, ArrowLeft, Copy, Download,
-  Sparkles, Microscope, Globe, MessageCircle, Languages, Cpu, FileUp
+  Sparkles, Microscope, Globe, Languages, Cpu, FileUp
 } from 'lucide-react'
 
 type InputMode = 'upload' | 'library'
-type ReadingMode = 'snap' | 'lens' | 'sphere' | 'qa'
+type ReadingMode = 'snap' | 'lens' | 'sphere'
 type Language = 'zh' | 'en'
 
 interface Paper {
