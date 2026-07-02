@@ -69,3 +69,29 @@ def test_format_citation_candidates():
     assert "[1]" in s and "Paper A" in s and "Alice" in s
     assert "[2]" in s and "Paper B" in s
     assert "p1" in s and "p2" in s
+
+
+from src.core.kb_context import format_bibliography_gbt7714
+
+
+def test_format_bibliography_gbt7714_normal():
+    papers = [
+        {"index": 1, "paper_id": "p1", "title": "Paper A",
+         "authors": ["Alice", "Bob"], "published_date": "2024-05-01",
+         "topic": "rag"},
+        {"index": 2, "paper_id": "p2", "title": "Paper B",
+         "authors": ["Carol", "Dan", "Eve", "Frank"], "published_date": "2025-01-01",
+         "topic": "rag"},
+    ]
+    s = format_bibliography_gbt7714(papers)
+    assert "## 参考文献" in s
+    assert "[1]" in s and "Paper A" in s and "Alice" in s and "Bob" in s
+    assert "[2]" in s and "Paper B" in s
+    # 超过 3 作者用「等」
+    assert "等" in s
+    # 条目间空行
+    assert "\n\n[2]" in s
+
+
+def test_format_bibliography_gbt7714_empty():
+    assert format_bibliography_gbt7714([]) == ""

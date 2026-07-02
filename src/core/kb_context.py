@@ -3,9 +3,11 @@
 
 供 AI 报告编辑流程与 Orchestrator 普通对话路径共用，把 KB 状态注入 LLM 上下文。
 """
+import re as _re
 from typing import Any, Dict, List
 
 from src.core.knowledge import list_knowledge_bases, search_papers
+from src.core.workflow import format_bibliography
 from src.utils.logger import get_logger
 
 logger = get_logger("kb_context")
@@ -78,3 +80,30 @@ def format_citation_candidates(papers: List[Dict[str, Any]]) -> str:
         pid = p.get("paper_id", "")
         lines.append(f"[{p.get('index', '?')}] {p.get('title', '')} — {author_str} — {year} — paper_id={pid}")
     return "\n".join(lines)
+
+
+def _to_bib_entry(p: Dict[str, Any]) -> Dict[str, Any]:
+    """把候选 paper dict 适配成 format_bibliography 期望的 schema。"""
+    authors = p.get("authors", []) or []
+    if isinstance(authors, str):
+        authors = [a.strip() for a in authors.split(";") if a.strip()]
+    date_str = p.get("published_date", "") or ""
+    year = ""
+    m = _re.search(r"\d{4}", str(date_str))
+    if m:
+        year = m.group(0)
+    return {
+        "paper_id": p.get("paper_id", ""),
+        "title": p.get("title", ""),
+        "authors": authors,
+        "year": year,
+        "source": p.get("topic", ""),
+    }
+
+
+def format_bibliography_gbt7714(papers: List[Dict[str, Any]]) -> str:
+    """GB/T 7714-2015 格式化参考文献目录，复用 workflow.format_bibliography。"""
+    if not papers:
+        return ""
+    entries = [_to_bib_entry(p) for p in papers]
+    return format_bibliography(entries)
