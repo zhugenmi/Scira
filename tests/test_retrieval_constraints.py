@@ -153,3 +153,74 @@ def test_execute_search_post_filters_by_year_range():
     # p3 (2019) dropped; p4 (no date) kept — can't filter without date
     assert "p1" in ids and "p2" in ids and "p4" in ids
     assert "p3" not in ids
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _fake_llm_response(json_str: str) -> str:
+    """Mock LLM invoke return: BaseAgent.invoke returns response.content (a str)."""
+    return json_str
+
+
+# ---------------------------------------------------------------------------
+# E2E integration tests — user constraints flow from IntentAgent to RetrievalAgent
+# ---------------------------------------------------------------------------
+
+def test_e2e_user_constraints_flow_to_strategy():
+    """IntentAgent + RetrievalAgent together: '最近5年...不少于20篇' -> strategy."""
+    from src.agents.intent import IntentAgent, IntentType
+
+    fake_json = json.dumps({
+        "intent": "search",
+        "workflow_mode": "search",
+        "confidence": 0.95,
+        "reasoning": "user wants KG survey",
+        "extracted_topic": "knowledge graph",
+        "year_range": [2021, 2026],
+        "min_count": 20,
+    })
+    with patch("src.agents.base.BaseAgent.invoke", return_value=_fake_llm_response(fake_json)):
+        intent = IntentAgent().analyze("最近5年知识图谱最新研究，不少于20篇")
+
+    assert intent.year_range == (2021, 2026)
+    assert intent.min_count == 20
+
+    agent = RetrievalAgent()
+    strategy = agent.generate_search_strategy(
+        topic=intent.extracted_topic or "knowledge graph",
+        key_concepts=[],
+        domain="computer_science",
+        has_chinese=True,
+        year_range=intent.year_range,
+        min_count=intent.min_count,
+    )
+    assert strategy.year_range == (2021, 2026)
+    assert strategy.max_results == 20
+    assert strategy.date_range[0] == "2021-01-01"
+
+
+def test_e2e_no_constraints_uses_defaults():
+    """Plain query -> no year_range, max_results=10, date range last 3 years."""
+    from src.agents.intent import IntentAgent
+
+    fake_json = json.dumps({
+        "intent": "search", "workflow_mode": "search", "confidence": 0.9,
+        "reasoning": "", "extracted_topic": "diffusion models",
+        "year_range": None, "min_count": None,
+    })
+    with patch("src.agents.base.BaseAgent.invoke", return_value=_fake_llm_response(fake_json)):
+        intent = IntentAgent().analyze("diffusion models survey")
+
+    assert intent.year_range is None
+    assert intent.min_count is None
+
+    agent = RetrievalAgent()
+    strategy = agent.generate_search_strategy(
+        topic="diffusion models", key_concepts=[],
+        domain="computer_science", has_chinese=False,
+    )
+    today = datetime.date.today()
+    assert strategy.max_results == 10
+    assert strategy.date_range[0] == datetime.date(today.year - 3 + 1, 1, 1).strftime("%Y-%m-%d")
