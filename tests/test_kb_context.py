@@ -1,3 +1,4 @@
+# tests/test_kb_context.py
 from unittest.mock import patch
 from src.core.kb_context import build_kb_directory_summary
 
