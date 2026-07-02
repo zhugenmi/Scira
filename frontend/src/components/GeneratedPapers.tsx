@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react'
-import { motion } from 'framer-motion'
-import { FileText, Download, Eye, Calendar, Search, Trash2 } from 'lucide-react'
+import { useState, useEffect, useRef, useCallback } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
+import { FileText, Download, Calendar, Search, Trash2, Edit3, ChevronDown, Sparkles, PenLine, Eye, Check, Loader2, AlertCircle, X } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
@@ -12,8 +12,20 @@ interface GeneratedPaper {
   title: string
   topic: string
   createdAt: string
+  createdAtMs: number
   wordCount: number
   filename: string
+}
+
+type ViewMode = 'render' | 'manual-edit'
+type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
+
+interface EditMenuChoice {
+  kind: 'ai' | 'manual'
+}
+
+interface GeneratedPapersProps {
+  onEditWithAI?: (paper: GeneratedPaper, content: string) => void
 }
 
 const markdownComponents = {
@@ -44,227 +56,435 @@ const markdownComponents = {
   hr: () => <hr className="my-6 border-dark-border" />,
 }
 
-export default function GeneratedPapers() {
+const HISTORY_LIMIT = 50
+const SAVE_DEBOUNCE_MS = 1500
+
+export default function GeneratedPapers({ onEditWithAI }: GeneratedPapersProps) {
   const [papers, setPapers] = useState<GeneratedPaper[]>([])
   const [loading, setLoading] = useState(true)
-  const [searchQuery, setSearchQuery] = useState('')
   const [selectedPaper, setSelectedPaper] = useState<GeneratedPaper | null>(null)
-  const [previewContent, setPreviewContent] = useState('')
+  const [renderContent, setRenderContent] = useState('')
 
-  // 加载预览内容
-  const loadPreviewContent = async (paper: GeneratedPaper) => {
-    setSelectedPaper(paper)
+  const [viewMode, setViewMode] = useState<ViewMode>('render')
+  const [editingContent, setEditingContent] = useState('')
+  const [historyStack, setHistoryStack] = useState<string[]>([])
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
+  const [dirty, setDirty] = useState(false)
+
+  const [dropdownOpen, setDropdownOpen] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+
+  const [editMenuOpen, setEditMenuOpen] = useState(false)
+
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const editingContentRef = useRef('')
+  const selectedFilenameRef = useRef<string | null>(null)
+  useEffect(() => { editingContentRef.current = editingContent }, [editingContent])
+  useEffect(() => { selectedFilenameRef.current = selectedPaper?.filename ?? null }, [selectedPaper])
+
+  const flushSave = useCallback(async () => {
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current)
+      debounceTimerRef.current = null
+    }
+    const filename = selectedFilenameRef.current
+    const content = editingContentRef.current
+    if (!filename) return
+    if (!dirty) return
+    setSaveStatus('saving')
     try {
-      const response = await fetch(`/data/outputs/${paper.filename}`)
-      if (response.ok) {
-        const content = await response.text()
-        setPreviewContent(content)
+      const res = await fetch('/api/outputs/write', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename, content }),
+      })
+      if (res.ok) {
+        setSaveStatus('saved')
+        setDirty(false)
+        setRenderContent(content)
+        setTimeout(() => setSaveStatus('idle'), 1500)
       } else {
-        setPreviewContent(`# ${paper.title}\n\n（预览内容加载失败）`)
+        setSaveStatus('error')
       }
     } catch {
-      setPreviewContent(`# ${paper.title}\n\n（预览内容加载失败）`)
+      setSaveStatus('error')
     }
-  }
+  }, [dirty])
 
-  // 从API获取文件列表
+  const scheduleSave = useCallback((content: string) => {
+    setDirty(true)
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current)
+    debounceTimerRef.current = setTimeout(() => {
+      debounceTimerRef.current = null
+      const filename = selectedFilenameRef.current
+      if (!filename) return
+      setSaveStatus('saving')
+      fetch('/api/outputs/write', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename, content }),
+      }).then(res => {
+        if (res.ok) {
+          setSaveStatus('saved')
+          setDirty(false)
+          setRenderContent(content)
+          setTimeout(() => setSaveStatus('idle'), 1500)
+        } else {
+          setSaveStatus('error')
+        }
+      }).catch(() => setSaveStatus('error'))
+    }, SAVE_DEBOUNCE_MS)
+  }, [])
+
+  const loadPaper = useCallback(async (paper: GeneratedPaper) => {
+    // 切换前若有未保存改动，先 flush
+    if (dirty) await flushSave()
+    setSelectedPaper(paper)
+    setViewMode('render')
+    setEditingContent('')
+    setHistoryStack([])
+    setSaveStatus('idle')
+    setDirty(false)
+    try {
+      const res = await fetch(`/data/outputs/${paper.filename}`)
+      const text = res.ok ? await res.text() : `# ${paper.title}\n\n（内容加载失败）`
+      setRenderContent(text)
+    } catch {
+      setRenderContent(`# ${paper.title}\n\n（内容加载失败）`)
+    }
+  }, [dirty, flushSave])
+
   useEffect(() => {
     const loadPapers = async () => {
       try {
-        const response = await fetch('/api/outputs/list')
-        if (response.ok) {
-          const data = await response.json()
-          const papersList: GeneratedPaper[] = data.files
+        const res = await fetch('/api/outputs/list')
+        if (res.ok) {
+          const data = await res.json()
+          const list: GeneratedPaper[] = (data.files || [])
             .filter((f: any) => f.name.endsWith('.md'))
             .map((f: any, index: number) => {
               const nameWithoutExt = f.name.replace(/\.md$/, '')
               const match = nameWithoutExt.match(/^(.+)_(\d{8}_\d{6})$/)
               const title = match ? match[1] : nameWithoutExt
-
+              const createdMs = f.modified * 1000
               return {
                 id: String(index + 1),
-                title: title,
+                title,
                 topic: '研究论文',
-                createdAt: new Date(f.modified * 1000).toLocaleString('zh-CN'),
+                createdAt: new Date(createdMs).toLocaleString('zh-CN'),
+                createdAtMs: createdMs,
                 wordCount: Math.round(f.size / 5),
-                filename: f.name
+                filename: f.name,
               }
             })
-          papersList.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-          setPapers(papersList)
-
-          if (papersList.length > 0) {
-            loadPreviewContent(papersList[0])
+          list.sort((a, b) => b.createdAtMs - a.createdAtMs)
+          setPapers(list)
+          if (list.length > 0) {
+            await loadPaper(list[0])
           }
         }
-      } catch (error) {
-        console.error('加载文件列表失败:', error)
+      } catch (e) {
+        console.error('加载文件列表失败:', e)
       }
       setLoading(false)
     }
-
     loadPapers()
+    return () => {
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current)
+    }
   }, [])
-
-  // 过滤论文
-  const filteredPapers = papers.filter(paper =>
-    paper.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    paper.topic.toLowerCase().includes(searchQuery.toLowerCase())
-  )
 
   const handleDownload = (paper: GeneratedPaper) => {
     window.open(`/data/outputs/${paper.filename}`, '_blank')
   }
 
   const handleDelete = async (paper: GeneratedPaper) => {
-    if (confirm('确定要删除这篇论文吗？此操作不可恢复。')) {
-      try {
-        const response = await fetch(`/api/outputs/${paper.filename}`, {
-          method: 'DELETE'
-        })
-        if (response.ok) {
-          setPapers(papers.filter(p => p.filename !== paper.filename))
-          if (selectedPaper?.filename === paper.filename) {
-            setSelectedPaper(null)
-            setPreviewContent('')
-          }
-        } else {
-          alert('删除失败')
+    if (!confirm('确定要删除这篇论文吗？此操作不可恢复。')) return
+    try {
+      const res = await fetch(`/api/outputs/${paper.filename}`, { method: 'DELETE' })
+      if (res.ok) {
+        const next = papers.filter(p => p.filename !== paper.filename)
+        setPapers(next)
+        if (selectedPaper?.filename === paper.filename) {
+          if (next.length > 0) await loadPaper(next[0])
+          else { setSelectedPaper(null); setRenderContent('') }
         }
-      } catch (error) {
-        console.error('删除失败:', error)
+      } else {
         alert('删除失败')
       }
+    } catch {
+      alert('删除失败')
+    }
+  }
+
+  const filteredPapers = papers.filter(p =>
+    p.title.toLowerCase().includes(searchQuery.toLowerCase())
+  )
+
+  const enterManualEdit = () => {
+    setViewMode('manual-edit')
+    setEditingContent(renderContent)
+    setHistoryStack([])
+    setSaveStatus('idle')
+    setDirty(false)
+    setEditMenuOpen(false)
+  }
+
+  const handleEditClick = (choice: EditMenuChoice) => {
+    if (choice.kind === 'manual') {
+      enterManualEdit()
+      return
+    }
+    // AI 编辑
+    setEditMenuOpen(false)
+    if (onEditWithAI && selectedPaper) {
+      onEditWithAI(selectedPaper, renderContent)
+    }
+  }
+
+  const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const next = e.target.value
+    // 推入历史栈（限制大小）
+    setHistoryStack(prev => {
+      const updated = [...prev, editingContentRef.current]
+      if (updated.length > HISTORY_LIMIT) updated.shift()
+      return updated
+    })
+    setEditingContent(next)
+    scheduleSave(next)
+  }
+
+  const handleUndo = () => {
+    setHistoryStack(prev => {
+      if (prev.length === 0) return prev
+      const last = prev[prev.length - 1]
+      const rest = prev.slice(0, -1)
+      setEditingContent(last)
+      editingContentRef.current = last
+      scheduleSave(last)
+      return rest
+    })
+  }
+
+  const handleExitManualEdit = async () => {
+    await flushSave()
+    setViewMode('render')
+    setHistoryStack([])
+  }
+
+  // Ctrl+Z 撤销（仅 manual-edit 态生效）
+  useEffect(() => {
+    if (viewMode !== 'manual-edit') return
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+        e.preventDefault()
+        handleUndo()
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [viewMode])
+
+  const saveBadge = () => {
+    switch (saveStatus) {
+      case 'saving': return <span className="flex items-center gap-1 text-xs text-dark-muted"><Loader2 className="w-3 h-3 animate-spin" />保存中…</span>
+      case 'saved': return <span className="flex items-center gap-1 text-xs text-green-400"><Check className="w-3 h-3" />已保存</span>
+      case 'error': return <span className="flex items-center gap-1 text-xs text-red-400"><AlertCircle className="w-3 h-3" />保存失败</span>
+      default: return dirty ? <span className="text-xs text-dark-muted">未保存</span> : null
     }
   }
 
   return (
-    <div className="h-full flex">
-      {/* 左侧论文列表 */}
-      <div className="w-96 border-r border-dark-border flex flex-col">
-        {/* 搜索栏 */}
-        <div className="p-4 border-b border-dark-border">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-muted" />
-            <input
-              type="text"
-              placeholder="搜索论文..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full bg-dark-bg border border-dark-border rounded-lg pl-10 pr-4 py-2 text-sm
-                       focus:outline-none focus:border-primary-500 placeholder:text-dark-muted"
-            />
-          </div>
-        </div>
-
-        {/* 论文列表 */}
-        <div className="flex-1 overflow-auto p-3 space-y-2">
-          {loading ? (
-            <div className="flex items-center justify-center h-32 text-dark-muted">
-              加载中...
+    <div className="h-full flex flex-col">
+      {/* 顶部工具栏：下拉选择 + 编辑按钮 */}
+      <div className="border-b border-dark-border px-4 py-3 flex items-center gap-3 bg-dark-bg/50">
+        {/* 下拉选择器 */}
+        <div className="relative flex-1 max-w-md">
+          <button
+            onClick={() => setDropdownOpen(o => !o)}
+            className="w-full flex items-center justify-between gap-2 px-3 py-2 bg-dark-surface border border-dark-border rounded-lg text-sm hover:border-primary-500/50 transition-colors"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <FileText className="w-4 h-4 text-primary-500 shrink-0" />
+              <span className="truncate text-dark-text">
+                {selectedPaper ? selectedPaper.title : (loading ? '加载中…' : '暂无报告')}
+              </span>
             </div>
-          ) : filteredPapers.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-32 text-dark-muted">
-              <FileText className="w-8 h-8 mb-2 opacity-50" />
-              <span className="text-sm">暂无生成的论文</span>
-            </div>
-          ) : (
-            filteredPapers.map((paper, index) => (
+            <ChevronDown className={`w-4 h-4 text-dark-muted shrink-0 transition-transform ${dropdownOpen ? 'rotate-180' : ''}`} />
+          </button>
+          <AnimatePresence>
+            {dropdownOpen && (
               <motion.div
-                key={paper.id}
-                initial={{ opacity: 0, y: 10 }}
+                initial={{ opacity: 0, y: -4 }}
                 animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: index * 0.05 }}
-                className={`p-4 rounded-xl border cursor-pointer transition-all duration-200
-                  ${selectedPaper?.id === paper.id
-                    ? 'bg-primary-500/10 border-primary-500/50'
-                    : 'bg-dark-surface border-dark-border hover:border-primary-500/30'
-                  }`}
-                onClick={() => loadPreviewContent(paper)}
+                exit={{ opacity: 0, y: -4 }}
+                transition={{ duration: 0.15 }}
+                className="absolute z-20 mt-1 w-full bg-dark-surface border border-dark-border rounded-lg shadow-xl overflow-hidden"
               >
-                <div className="flex items-start justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    <FileText className="w-4 h-4 text-primary-500" />
-                    <span className="text-xs px-2 py-0.5 bg-primary-500/20 text-primary-400 rounded-full">
-                      {paper.topic}
-                    </span>
+                <div className="p-2 border-b border-dark-border">
+                  <div className="relative">
+                    <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-dark-muted" />
+                    <input
+                      autoFocus
+                      type="text"
+                      placeholder="搜索报告..."
+                      value={searchQuery}
+                      onChange={e => setSearchQuery(e.target.value)}
+                      className="w-full bg-dark-bg border border-dark-border rounded pl-7 pr-2 py-1.5 text-xs focus:outline-none focus:border-primary-500"
+                    />
                   </div>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      handleDelete(paper)
-                    }}
-                    className="p-1 hover:bg-dark-border/50 rounded text-dark-muted hover:text-red-400"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
                 </div>
-                <h3 className="font-medium text-dark-text mb-2 line-clamp-2">{paper.title}</h3>
-                <div className="flex items-center justify-between text-xs text-dark-muted">
-                  <span className="flex items-center gap-1">
-                    <Calendar className="w-3 h-3" />
-                    {paper.createdAt}
-                  </span>
-                  <span>{paper.wordCount.toLocaleString()} 字</span>
+                <div className="max-h-80 overflow-auto">
+                  {filteredPapers.length === 0 ? (
+                    <div className="px-3 py-4 text-center text-xs text-dark-muted">无匹配报告</div>
+                  ) : filteredPapers.map(paper => (
+                    <div
+                      key={paper.id}
+                      onClick={() => { setDropdownOpen(false); setSearchQuery(''); loadPaper(paper) }}
+                      className={`px-3 py-2 cursor-pointer hover:bg-primary-500/10 flex items-start justify-between gap-2 ${selectedPaper?.id === paper.id ? 'bg-primary-500/10' : ''}`}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm text-dark-text truncate">{paper.title}</div>
+                        <div className="flex items-center gap-1 text-[10px] text-dark-muted mt-0.5">
+                          <Calendar className="w-2.5 h-2.5" />
+                          {paper.createdAt}
+                          <span className="mx-1">·</span>
+                          {paper.wordCount.toLocaleString()} 字
+                        </div>
+                      </div>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleDelete(paper) }}
+                        className="p-1 hover:bg-dark-border/50 rounded text-dark-muted hover:text-red-400 shrink-0"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))}
                 </div>
               </motion.div>
-            ))
+            )}
+          </AnimatePresence>
+        </div>
+
+        {/* 右侧操作区 */}
+        <div className="flex items-center gap-2 shrink-0">
+          {viewMode === 'manual-edit' && (
+            <>
+              {saveBadge()}
+              <button
+                onClick={handleUndo}
+                disabled={historyStack.length === 0}
+                className="flex items-center gap-1.5 px-3 py-2 bg-dark-surface border border-dark-border rounded-lg text-xs text-dark-text hover:border-primary-500/50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                title="撤销（Ctrl+Z，仅本次会话）"
+              >
+                <X className="w-3.5 h-3.5" />
+                撤销
+              </button>
+              <button
+                onClick={handleExitManualEdit}
+                className="flex items-center gap-1.5 px-3 py-2 bg-primary-500 rounded-lg text-xs text-white hover:bg-primary-600 transition-colors"
+              >
+                <Eye className="w-3.5 h-3.5" />
+                完成编辑
+              </button>
+            </>
+          )}
+          {viewMode === 'render' && (
+            <>
+              <div className="relative">
+                <button
+                  onClick={() => setEditMenuOpen(o => !o)}
+                  disabled={!selectedPaper}
+                  className="flex items-center gap-1.5 px-4 py-2 bg-primary-500 rounded-lg text-sm text-white hover:bg-primary-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <Edit3 className="w-4 h-4" />
+                  编辑
+                  <ChevronDown className={`w-3.5 h-3.5 transition-transform ${editMenuOpen ? 'rotate-180' : ''}`} />
+                </button>
+                <AnimatePresence>
+                  {editMenuOpen && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -4 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -4 }}
+                      transition={{ duration: 0.15 }}
+                      className="absolute right-0 z-20 mt-1 w-44 bg-dark-surface border border-dark-border rounded-lg shadow-xl overflow-hidden"
+                    >
+                      <button
+                        onClick={() => handleEditClick({ kind: 'ai' })}
+                        className="w-full px-3 py-2.5 flex items-center gap-2 hover:bg-primary-500/10 text-sm text-dark-text text-left"
+                      >
+                        <Sparkles className="w-4 h-4 text-primary-400" />
+                        <div>
+                          <div>AI 编辑</div>
+                          <div className="text-[10px] text-dark-muted">跳转助手对话修改</div>
+                        </div>
+                      </button>
+                      <button
+                        onClick={() => handleEditClick({ kind: 'manual' })}
+                        className="w-full px-3 py-2.5 flex items-center gap-2 hover:bg-primary-500/10 text-sm text-dark-text text-left border-t border-dark-border"
+                      >
+                        <PenLine className="w-4 h-4 text-primary-400" />
+                        <div>
+                          <div>手动编辑</div>
+                          <div className="text-[10px] text-dark-muted">直接编辑，自动保存</div>
+                        </div>
+                      </button>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+              <button
+                onClick={() => selectedPaper && handleDownload(selectedPaper)}
+                disabled={!selectedPaper}
+                className="flex items-center gap-2 px-3 py-2 bg-dark-surface border border-dark-border rounded-lg text-sm text-dark-text hover:border-primary-500/50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <Download className="w-4 h-4" />
+                下载
+              </button>
+            </>
           )}
         </div>
       </div>
 
-      {/* 右侧预览区域 */}
-      <div className="flex-1 flex flex-col">
-        {selectedPaper ? (
-          <>
-            {/* 操作栏 */}
-            <div className="p-4 border-b border-dark-border flex items-center justify-between">
-              <h2 className="font-display font-semibold text-lg text-dark-text">
-                {selectedPaper.title}
-              </h2>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => loadPreviewContent(selectedPaper)}
-                  className="flex items-center gap-2 px-4 py-2 bg-dark-surface border border-dark-border
-                           rounded-lg text-sm text-dark-text hover:border-primary-500/50 transition-colors"
-                >
-                  <Eye className="w-4 h-4" />
-                  预览
-                </button>
-                <button
-                  onClick={() => handleDownload(selectedPaper)}
-                  className="flex items-center gap-2 px-4 py-2 bg-primary-500 rounded-lg text-sm
-                           text-white hover:bg-primary-600 transition-colors"
-                >
-                  <Download className="w-4 h-4" />
-                  下载
-                </button>
-              </div>
+      {/* 内容区 */}
+      <div className="flex-1 overflow-hidden">
+        {!selectedPaper ? (
+          <div className="h-full flex flex-col items-center justify-center text-dark-muted">
+            <FileText className="w-12 h-12 mb-4 opacity-30" />
+            <p className="text-sm">{loading ? '加载中…' : '暂无报告，请先在工作流中生成'}</p>
+          </div>
+        ) : viewMode === 'render' ? (
+          <div className="h-full overflow-auto p-6">
+            <div className="max-w-3xl mx-auto">
+              <article className="paper-reading-result">
+                {renderContent ? (
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm, remarkMath]}
+                    rehypePlugins={[rehypeKatex]}
+                    components={markdownComponents}
+                  >
+                    {renderContent}
+                  </ReactMarkdown>
+                ) : (
+                  <p className="text-dark-muted text-sm">正在加载…</p>
+                )}
+              </article>
             </div>
-
-            {/* 预览内容 - Markdown渲染 */}
-            <div className="flex-1 overflow-auto p-6">
-              <div className="max-w-3xl mx-auto">
-                <article className="paper-reading-result">
-                  {previewContent ? (
-                    <ReactMarkdown
-                      remarkPlugins={[remarkGfm, remarkMath]}
-                      rehypePlugins={[rehypeKatex]}
-                      components={markdownComponents}
-                    >
-                      {previewContent}
-                    </ReactMarkdown>
-                  ) : (
-                    <p className="text-dark-muted text-sm">正在加载预览内容...</p>
-                  )}
-                </article>
-              </div>
-            </div>
-          </>
+          </div>
         ) : (
-          <div className="flex-1 flex flex-col items-center justify-center text-dark-muted">
-            <Eye className="w-12 h-12 mb-4 opacity-30" />
-            <p className="text-sm">选择一个论文查看预览</p>
+          <div className="h-full flex flex-col">
+            <div className="px-4 py-1.5 bg-dark-surface/30 border-b border-dark-border text-[11px] text-dark-muted flex items-center gap-2">
+              <PenLine className="w-3 h-3" />
+              手动编辑模式 · 自动保存（1.5s 防抖）· Ctrl+Z 撤销（仅本次会话）
+            </div>
+            <textarea
+              value={editingContent}
+              onChange={handleTextareaChange}
+              className="flex-1 w-full bg-dark-bg text-dark-text p-6 font-mono text-sm leading-relaxed resize-none focus:outline-none"
+              spellCheck={false}
+              placeholder="编辑 markdown 内容..."
+            />
           </div>
         )}
       </div>

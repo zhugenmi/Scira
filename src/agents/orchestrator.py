@@ -43,6 +43,8 @@ class IntentResult:
     extracted_topic: Optional[str] = None
     requires_workflow: bool = False
     workflow_mode: str = "full"  # full / search_only / search_download / none
+    year_range: Optional[tuple] = None
+    min_count: Optional[int] = None
 
 
 class OrchestratorAgent(BaseAgent):
@@ -126,6 +128,8 @@ class OrchestratorAgent(BaseAgent):
             extracted_topic=recognized.extracted_topic,
             requires_workflow=requires_workflow,
             workflow_mode=recognized.workflow_mode.value,
+            year_range=recognized.year_range,
+            min_count=recognized.min_count,
         )
 
     def generate_greeting_response(self, user_message: str) -> str:
@@ -226,6 +230,13 @@ class OrchestratorAgent(BaseAgent):
         Returns:
             处理结果字典
         """
+        # 0. 注入知识库概况
+        from src.core.kb_context import build_kb_directory_summary
+        if session_context is None:
+            session_context = {}
+        if "kb_summary" not in session_context:
+            session_context["kb_summary"] = build_kb_directory_summary()
+
         # 1. 分析意图
         intent_result = self.analyze_intent(user_message, session_context, message_history)
 
@@ -264,6 +275,8 @@ class OrchestratorAgent(BaseAgent):
             result["action"] = "start_workflow"
             result["requires_workflow"] = True
             result["workflow_mode"] = "full"
+            result["year_range"] = intent_result.year_range
+            result["min_count"] = intent_result.min_count
 
         elif intent_result.intent == IntentType.FULL_RESEARCH:
             # 完整调研 + 生成综述
@@ -273,6 +286,8 @@ class OrchestratorAgent(BaseAgent):
             result["action"] = "start_workflow"
             result["requires_workflow"] = True
             result["workflow_mode"] = "full"
+            result["year_range"] = intent_result.year_range
+            result["min_count"] = intent_result.min_count
 
         elif intent_result.intent == IntentType.SEARCH:
             # 检索 + 下载论文（检索到后自动下载 PDF，不生成综述）
@@ -282,6 +297,8 @@ class OrchestratorAgent(BaseAgent):
             result["action"] = "start_workflow"
             result["requires_workflow"] = True
             result["workflow_mode"] = "search"
+            result["year_range"] = intent_result.year_range
+            result["min_count"] = intent_result.min_count
 
         elif intent_result.intent == IntentType.GENERATE_ABSTRACT:
             # 子任务：只生成摘要，不触发工作流
@@ -337,6 +354,8 @@ class OrchestratorAgent(BaseAgent):
             result["action"] = "start_workflow"
             result["requires_workflow"] = True
             result["workflow_mode"] = "full"
+            result["year_range"] = intent_result.year_range
+            result["min_count"] = intent_result.min_count
 
         return result
 

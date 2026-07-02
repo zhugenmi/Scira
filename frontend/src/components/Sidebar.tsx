@@ -11,7 +11,7 @@ import {
 } from 'lucide-react'
 import { useState, useEffect, useCallback } from 'react'
 
-type View = 'chat' | 'generated' | 'knowledge' | 'paper-reading'
+type View = 'chat' | 'generated' | 'downloaded' | 'knowledge' | 'paper-reading'
 
 interface SidebarProps {
   currentView: View

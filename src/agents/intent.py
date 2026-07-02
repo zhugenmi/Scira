@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from src.agents.base import BaseAgent
 from src.agents.prompts import INTENT_SYSTEM, INTENT_ANALYZE_PROMPT
@@ -72,6 +72,8 @@ class IntentResult:
     confidence: float
     reasoning: str
     extracted_topic: Optional[str] = None
+    year_range: Optional[Tuple[int, int]] = None
+    min_count: Optional[int] = None
 
 
 def _extract_json(text: str) -> Optional[Dict[str, Any]]:
@@ -93,6 +95,81 @@ def _extract_json(text: str) -> Optional[Dict[str, Any]]:
         return json.loads(m.group())
     except json.JSONDecodeError:
         return None
+
+
+_CN_NUMERAL_MAP = {
+    "零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
+    "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
+}
+
+
+def _cn_numeral_to_int(s: str) -> Optional[int]:
+    """Convert a Chinese numeral string (1-99) to int. Returns None if not matched."""
+    if not s:
+        return None
+    if s.isdigit():
+        try:
+            return int(s)
+        except ValueError:
+            return None
+    if len(s) == 1:
+        return _CN_NUMERAL_MAP.get(s)
+    # e.g. 十五 / 二十 / 二十五
+    if s.startswith("十"):
+        rest = _CN_NUMERAL_MAP.get(s[1:], 0)
+        return 10 + rest if rest or s[1:] == "零" else 10
+    if "十" in s:
+        parts = s.split("十")
+        tens = _CN_NUMERAL_MAP.get(parts[0], 0) or 1
+        ones = _CN_NUMERAL_MAP.get(parts[1], 0) if parts[1] else 0
+        return tens * 10 + ones
+    return None
+
+
+def _extract_constraints_fallback(
+    user_message: str,
+) -> Tuple[Optional[Tuple[int, int]], Optional[int]]:
+    """Regex-based fallback for extracting year_range and min_count from user message.
+
+    Covers Chinese ('最近N年/近N年/N年内') and English ('past/last N years'),
+    plus '不少于/至少/最少 N 篇' and 'N 篇以上'. Returns (year_range, min_count),
+    either may be None.
+    """
+    import datetime
+
+    if not user_message:
+        return None, None
+
+    today = datetime.date.today()
+    year_range: Optional[Tuple[int, int]] = None
+    min_count: Optional[int] = None
+
+    # Year range: Chinese with arabic or numeral
+    # 最近5年 / 近五年 / 5年内
+    m = re.search(r"(?:最近|近|过去)?\s*([0-9一二三四五六七八九十两]{1,3})\s*年(?:内|内的|的)?", user_message)
+    if m:
+        n = _cn_numeral_to_int(m.group(1))
+        if n and 1 <= n <= 30:
+            year_range = (today.year - n + 1, today.year)
+
+    # English: past/last N years
+    m_en = re.search(r"(?:past|last|recent)\s+(\d{1,2})\s+years?", user_message, re.IGNORECASE)
+    if m_en and not year_range:
+        n = int(m_en.group(1))
+        if 1 <= n <= 30:
+            year_range = (today.year - n + 1, today.year)
+
+    # Min count: 不少于/至少/最少 N 篇
+    m_mc = re.search(r"(?:不少于|至少|最少|不小于)\s*(\d{1,4})\s*篇", user_message)
+    if m_mc:
+        min_count = int(m_mc.group(1))
+    else:
+        # N 篇以上
+        m_above = re.search(r"(\d{1,4})\s*篇\s*以上", user_message)
+        if m_above:
+            min_count = int(m_above.group(1))
+
+    return year_range, min_count
 
 
 class IntentAgent(BaseAgent):
@@ -125,6 +202,13 @@ class IntentAgent(BaseAgent):
         Returns:
             IntentResult
         """
+        kb_summary = ""
+        if session_context:
+            kb_summary = session_context.get("kb_summary", "")
+        if not kb_summary:
+            kb_summary = "（未提供知识库概况）"
+        kb_summary_block = f"\n系统知识库概况：{kb_summary}"
+
         context_info = ""
         if session_context:
             topics = session_context.get("research_topics", [])
@@ -145,6 +229,7 @@ class IntentAgent(BaseAgent):
 
         prompt = INTENT_ANALYZE_PROMPT.format(
             user_query=user_message,
+            kb_summary=kb_summary_block,
             context_info=context_info,
             history_info=history_info,
         )
@@ -172,12 +257,43 @@ class IntentAgent(BaseAgent):
             if workflow_mode != expected_mode and intent != IntentType.UNKNOWN:
                 workflow_mode = expected_mode
 
+            # 用户约束（年份范围 / 数量）：LLM 抽取优先，正则兜底补缺
+            llm_year = parsed.get("year_range")
+            llm_min_count = parsed.get("min_count")
+
+            year_range = None
+            if isinstance(llm_year, list) and len(llm_year) == 2:
+                try:
+                    y1, y2 = int(llm_year[0]), int(llm_year[1])
+                    if 1900 <= y1 <= 2100 and 1900 <= y2 <= 2100 and y1 <= y2:
+                        year_range = (y1, y2)
+                except (TypeError, ValueError):
+                    pass
+
+            try:
+                mc_raw = llm_min_count
+                min_count = int(mc_raw) if mc_raw is not None else None
+                if min_count is not None and min_count <= 0:
+                    min_count = None
+            except (TypeError, ValueError):
+                min_count = None
+
+            # 正则兜底：LLM 没给的字段从原文再抽一遍
+            if year_range is None or min_count is None:
+                fb_year, fb_min = _extract_constraints_fallback(user_message)
+                if year_range is None:
+                    year_range = fb_year
+                if min_count is None:
+                    min_count = fb_min
+
             return IntentResult(
                 intent=intent,
                 workflow_mode=workflow_mode,
                 confidence=float(parsed.get("confidence", 0.5)),
                 reasoning=parsed.get("reasoning", ""),
                 extracted_topic=parsed.get("extracted_topic") or None,
+                year_range=year_range,
+                min_count=min_count,
             )
         except Exception as e:
             # LLM 调用失败：走关键词兜底，避免阻塞用户
@@ -197,6 +313,7 @@ class IntentAgent(BaseAgent):
         检索和下载统一归为 search 模式（检索后自动下载）。
         """
         msg = user_message or ""
+        fb_year, fb_min = _extract_constraints_fallback(user_message)
         has_report = any(k in msg for k in ("综述", "报告", "写一篇", "写论文", "生成论文", "review", "survey"))
         has_search = any(k in msg for k in (
             "检索", "查找", "搜索", "下载", "获取", "search", "find", "look up", "download", "fetch",
@@ -218,6 +335,8 @@ class IntentAgent(BaseAgent):
                 confidence=0.8,
                 reasoning=f"keyword fallback (list_kb): {err}",
                 extracted_topic=None,
+                year_range=fb_year,
+                min_count=fb_min,
             )
 
         if has_report:
@@ -227,6 +346,8 @@ class IntentAgent(BaseAgent):
                 confidence=0.6,
                 reasoning=f"keyword fallback (report): {err}",
                 extracted_topic=msg,
+                year_range=fb_year,
+                min_count=fb_min,
             )
         if has_search:
             return IntentResult(
@@ -235,6 +356,8 @@ class IntentAgent(BaseAgent):
                 confidence=0.6,
                 reasoning=f"keyword fallback (search): {err}",
                 extracted_topic=msg,
+                year_range=fb_year,
+                min_count=fb_min,
             )
         if has_abstract:
             return IntentResult(
@@ -243,6 +366,8 @@ class IntentAgent(BaseAgent):
                 confidence=0.7,
                 reasoning=f"keyword fallback (abstract): {err}",
                 extracted_topic=msg,
+                year_range=fb_year,
+                min_count=fb_min,
             )
         if has_intro:
             return IntentResult(
@@ -251,6 +376,8 @@ class IntentAgent(BaseAgent):
                 confidence=0.7,
                 reasoning=f"keyword fallback (introduction): {err}",
                 extracted_topic=msg,
+                year_range=fb_year,
+                min_count=fb_min,
             )
         if has_conclusion:
             return IntentResult(
@@ -259,6 +386,8 @@ class IntentAgent(BaseAgent):
                 confidence=0.7,
                 reasoning=f"keyword fallback (conclusion): {err}",
                 extracted_topic=msg,
+                year_range=fb_year,
+                min_count=fb_min,
             )
         # 默认完整流程（保守：不漏掉用户的综述需求）
         return IntentResult(
@@ -267,6 +396,8 @@ class IntentAgent(BaseAgent):
             confidence=0.4,
             reasoning=f"keyword fallback (default full): {err}",
             extracted_topic=msg,
+            year_range=fb_year,
+            min_count=fb_min,
         )
 
 

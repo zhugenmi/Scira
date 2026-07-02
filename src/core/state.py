@@ -89,6 +89,14 @@ class GraphState(TypedDict):
     # 用于检索源路由；下游节点暂不消费，但需声明否则 LangGraph 会丢弃。
     domain: Optional[str]
 
+    # 用户检索约束（由 IntentAgent 抽取，retrieval_node 消费）。
+    # year_range: (start_year, end_year) 闭区间；min_count: 用户要求"不少于 N 篇"。
+    # 未指定时为 None。声明在 GraphState 否则 LangGraph 会在节点返回时丢弃。
+    year_range: Optional[List[int]]  # [start_year, end_year]
+    min_count: Optional[int]
+    # 检索结果不足时给前端的提示（如"实际找到 8 篇（用户要求≥20）"）
+    retrieval_shortfall_hint: Optional[str]
+
     # 来源知识库（KB-based 写作入口用）：当从已有知识库生成综述时，记录所选类别名。
     # retrieval_node 不写；run_workflow_from_knowledge_bases 写入。
     source_categories: Optional[List[str]]

@@ -28,7 +28,12 @@ from src.agents.reviewer import ReviewerAgent
 
 # ==================== Retrieval Approval Helpers ====================
 
-def prepare_retrieval(user_query: str, modification: Optional[str] = None) -> Dict[str, Any]:
+def prepare_retrieval(
+    user_query: str,
+    modification: Optional[str] = None,
+    year_range: Optional[tuple] = None,
+    min_count: Optional[int] = None,
+) -> Dict[str, Any]:
     """
     只执行检索的「准备」阶段：分析查询 + 生成检索策略，不执行搜索/下载。
 
@@ -58,7 +63,11 @@ def prepare_retrieval(user_query: str, modification: Optional[str] = None) -> Di
     key_concepts = analysis.get("key_concepts", []) or []
 
     try:
-        strategy = agent.generate_search_strategy(topic, key_concepts)
+        strategy = agent.generate_search_strategy(
+            topic, key_concepts,
+            year_range=year_range,
+            min_count=min_count,
+        )
     except Exception as e:
         logger.warning(f"prepare_retrieval generate_search_strategy failed: {e}")
         from src.agents.retrieval import SearchStrategy
@@ -551,11 +560,27 @@ def retrieval_node(state: GraphState) -> GraphState:
         # 若携带审批通过的检索条件，则直接复用，避免对中文查询二次翻译得到空主题
         approved_topic = state.get("approved_topic")
         approved_keywords = state.get("approved_keywords")
+
+        # 用户检索约束（来自 IntentAgent → Orchestrator → state）
+        state_year_range = state.get("year_range")
+        year_range = None
+        if isinstance(state_year_range, (list, tuple)) and len(state_year_range) == 2:
+            try:
+                year_range = (int(state_year_range[0]), int(state_year_range[1]))
+            except (TypeError, ValueError):
+                year_range = None
+        state_min_count = state.get("min_count")
+        min_count = None
+        if isinstance(state_min_count, int) and state_min_count > 0:
+            min_count = state_min_count
+
         result = agent.run(
             user_query=user_query,
             auto_approve=state.get("auto_approve", False),
             approved_topic=approved_topic,
             approved_keywords=approved_keywords,
+            year_range=year_range,
+            min_count=min_count,
         )
 
         # Update state
@@ -587,6 +612,14 @@ def retrieval_node(state: GraphState) -> GraphState:
                 })
 
         state["selected_papers"] = result.selected_paper_ids
+
+        # 若用户指定了 min_count 且实际不足，写提示供前端 SEARCH_SUMMARY 读取
+        if min_count is not None and len(result.papers) < min_count:
+            hint = f"实际检索到 {len(result.papers)} 篇（用户要求≥{min_count} 篇）"
+            logger.warning(f"Retrieval shortfall: {hint}")
+            state["retrieval_shortfall_hint"] = hint
+        else:
+            state["retrieval_shortfall_hint"] = None
 
         # Check if retrieval was successful
         num_papers = len(result.papers)

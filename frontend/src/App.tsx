@@ -47,12 +47,22 @@ export default function App() {
     setChatKey(prev => prev + 1)
   }, [])
 
+  // 从报告页「AI 编辑」入口跳转：预填一条含 <report> 全文的消息发给助手，
+  // 后端在 chat/stream 中检测到该标签即自动初始化编辑会话（加载工作副本、注入编辑系统提示）。
+  const handleEditWithAI = useCallback((paper: { filename: string; title: string }, content: string) => {
+    const message = `请帮我编辑以下报告（文件：${paper.filename}）。读完后请先问我需要怎么修改，不要直接改：\n\n<report>\n${content}\n</report>`
+    setSelectedSessionId(null)
+    setPendingChatMessage(message)
+    setCurrentView('chat')
+    setChatKey(prev => prev + 1)
+  }, [])
+
   const renderView = () => {
     switch (currentView) {
       case 'chat':
         return <ChatView key={chatKey} sessionId={selectedSessionId} pendingMessage={pendingChatMessage} onPendingConsumed={() => setPendingChatMessage(null)} />
       case 'generated':
-        return <GeneratedPapers />
+        return <GeneratedPapers onEditWithAI={(paper, content) => handleEditWithAI({ filename: paper.filename, title: paper.title }, content)} />
       case 'downloaded':
         return <DownloadedPapers />
       case 'knowledge':
