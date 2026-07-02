@@ -125,6 +125,13 @@ class IntentAgent(BaseAgent):
         Returns:
             IntentResult
         """
+        kb_summary = ""
+        if session_context:
+            kb_summary = session_context.get("kb_summary", "")
+        if not kb_summary:
+            kb_summary = "（未提供知识库概况）"
+        kb_summary_block = f"\n系统知识库概况：{kb_summary}"
+
         context_info = ""
         if session_context:
             topics = session_context.get("research_topics", [])
@@ -145,6 +152,7 @@ class IntentAgent(BaseAgent):
 
         prompt = INTENT_ANALYZE_PROMPT.format(
             user_query=user_message,
+            kb_summary=kb_summary_block,
             context_info=context_info,
             history_info=history_info,
         )

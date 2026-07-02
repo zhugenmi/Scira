@@ -418,6 +418,7 @@ INTENT_SYSTEM = "你是一位科研助手的意图识别专家。你的职责是
 INTENT_ANALYZE_PROMPT = """分析以下用户消息的意图，并决定启动哪一段工作流。
 
 用户消息：{user_query}
+{kb_summary}
 {context_info}
 {history_info}
 

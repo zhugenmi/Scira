@@ -226,6 +226,13 @@ class OrchestratorAgent(BaseAgent):
         Returns:
             处理结果字典
         """
+        # 0. 注入知识库概况
+        from src.core.kb_context import build_kb_directory_summary
+        if session_context is None:
+            session_context = {}
+        if "kb_summary" not in session_context:
+            session_context["kb_summary"] = build_kb_directory_summary()
+
         # 1. 分析意图
         intent_result = self.analyze_intent(user_message, session_context, message_history)
 
