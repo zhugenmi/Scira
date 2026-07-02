@@ -43,6 +43,7 @@ class SearchStrategy:
     rationale: str
     domain: str = "general"
     has_chinese: bool = False
+    year_range: Optional[Tuple[int, int]] = None  # explicit user-supplied (start_year, end_year)
 
 
 @dataclass
@@ -141,6 +142,8 @@ class RetrievalAgent:
         key_concepts: List[str],
         domain: str = "general",
         has_chinese: bool = False,
+        year_range: Optional[Tuple[int, int]] = None,
+        min_count: Optional[int] = None,
     ) -> SearchStrategy:
         """Generate search strategy from topic analysis.
 
@@ -149,16 +152,14 @@ class RetrievalAgent:
             key_concepts: Key concepts from query analysis
             domain: Classified domain (one of domain_routing.VALID_DOMAINS).
             has_chinese: Whether the original user query contained Chinese characters.
-
-        Returns:
-            SearchStrategy object
+            year_range: Optional (start_year, end_year) from user query. Overrides default.
+            min_count: Optional user-specified minimum paper count. Sets max_results.
         """
         # Generate keywords - use strategy_generator or fallback to key_concepts
         if self.strategy_generator is not None:
             keywords = self.strategy_generator.generate_keywords(topic)
             categories = self.strategy_generator.suggest_categories(topic)
         else:
-            # Fallback: use key_concepts as keywords
             logger.warning("strategy_generator is None, using key_concepts as fallback")
             keywords = key_concepts.copy() if key_concepts else [topic]
             categories = []
@@ -170,19 +171,33 @@ class RetrievalAgent:
         boolean_query = " OR ".join([f'"{k}"' for k in keywords[:5]])
         boolean_query = f"({boolean_query})"
 
-        # Date range: last 2 years
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=730)  # 2 years
+        # Date range: user-supplied year_range wins; else default last 3 calendar years.
+        today = datetime.now()
+        if year_range is not None:
+            start_year, end_year = year_range
+            start_date = datetime(start_year, 1, 1)
+            end_date = datetime(end_year, 12, 31, 23, 59, 59)
+            rationale_range = f"{start_year}-{end_year}"
+        else:
+            default_years = 3
+            start_year = today.year - default_years + 1
+            start_date = datetime(start_year, 1, 1)
+            end_date = today
+            rationale_range = f"last {default_years} years"
+
+        # max_results: user min_count wins; else config default (10).
+        max_results = min_count if (min_count and min_count > 0) else self.config.max_literature_count
 
         return SearchStrategy(
             keywords=keywords,
             boolean_query=boolean_query,
             categories=categories,
             date_range=(start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d")),
-            max_results=self.config.max_literature_count,
-            rationale=f"Search for {topic} with focus on recent papers (last 2 years)",
+            max_results=max_results,
+            rationale=f"Search for {topic} with focus on recent papers ({rationale_range})",
             domain=domain,
             has_chinese=has_chinese,
+            year_range=year_range,
         )
 
     def execute_search(self, strategy: SearchStrategy) -> List[Dict[str, Any]]:
@@ -218,19 +233,47 @@ class RetrievalAgent:
             logger.info(f"Domain routing: domain={strategy.domain}, sources={sources}")
 
             # 调用MCP API搜索论文
+            # year_range 透传给 MCP（仅 semantic 源消费），同时下方会再做后过滤兜底
+            request_body = {
+                "query": strategy.boolean_query,
+                "max_results": strategy.max_results,
+                "sources": ",".join(sources),
+            }
+            if strategy.year_range is not None:
+                start_year, _end_year = strategy.year_range
+                # Semantic Scholar 支持 "2010-" 格式（>=start_year）
+                request_body["year"] = f"{start_year}-"
             response = requests.post(
                 f"{self.mcp_api_base}/search",
-                json={
-                    "query": strategy.boolean_query,
-                    "max_results": strategy.max_results,
-                    "sources": ",".join(sources),
-                },
+                json=request_body,
                 timeout=60
             )
             response.raise_for_status()
             result = response.json()
 
             papers = result.get("papers", [])
+
+            # 后过滤：其他源（arxiv/openalex/crossref 等）不消费 year 参数，
+            # 按 published_date 再筛一次。无日期字段的论文保留（无法判定）。
+            if strategy.year_range is not None:
+                start_y, end_y = strategy.year_range
+                filtered = []
+                for p in papers:
+                    date_str = p.get("published", p.get("published_date", ""))
+                    if not date_str:
+                        filtered.append(p)
+                        continue
+                    try:
+                        year = int(str(date_str)[:4])
+                        if start_y <= year <= end_y:
+                            filtered.append(p)
+                    except (ValueError, TypeError):
+                        filtered.append(p)
+                logger.info(
+                    f"Year post-filter {strategy.year_range}: {len(papers)} → {len(filtered)}"
+                )
+                papers = filtered
+
             logger.info(f"Search completed, found {len(papers)} papers")
             return papers
 
@@ -242,24 +285,15 @@ class RetrievalAgent:
     def select_papers(
         self,
         papers: List[Dict[str, Any]],
-        max_select: int = 10,
+        max_select: Optional[int] = None,
     ) -> List[str]:
+        """Select most relevant papers from search results.
+
+        Uses simple relevance heuristic based on recency. When max_select is
+        None, all papers are selected (no artificial cap); callers that need
+        a cap (e.g. retrieval_node aligning to strategy.max_results) pass it
+        explicitly.
         """
-        Select most relevant papers from search results.
-
-        Uses simple relevance heuristic based on:
-        - Recency (newer papers preferred)
-        - Citation count (if available in comments)
-
-        Args:
-            papers: List of papers
-            max_select: Maximum papers to select
-
-        Returns:
-            List of selected paper IDs
-        """
-        # Sort by published date (newer first). Normalize all datetimes to
-        # offset-aware UTC so naive and aware values can be compared.
         def get_published_date(p):
             date_str = p.get("published", p.get("published_date", ""))
             if date_str:
@@ -272,14 +306,12 @@ class RetrievalAgent:
                     pass
             return datetime.min.replace(tzinfo=timezone.utc)
 
-        sorted_papers = sorted(
-            papers,
-            key=get_published_date,
-            reverse=True
-        )
+        sorted_papers = sorted(papers, key=get_published_date, reverse=True)
 
-        # Select top N
-        selected = sorted_papers[:max_select]
+        if max_select is not None:
+            selected = sorted_papers[:max_select]
+        else:
+            selected = sorted_papers
         return [p.get("paper_id", p.get("id", "")) for p in selected]
 
     def generate_retrieval_approval_prompt(
@@ -331,20 +363,18 @@ class RetrievalAgent:
         auto_approve: bool = False,
         approved_topic: Optional[str] = None,
         approved_keywords: Optional[List[str]] = None,
+        year_range: Optional[Tuple[int, int]] = None,
+        min_count: Optional[int] = None,
     ) -> RetrievalResult:
-        """
-        Run complete retrieval workflow.
+        """Run complete retrieval workflow.
 
         Args:
             user_query: User research query
             auto_approve: Skip human approval if True
-            approved_topic: 用户已确认的规范化主题（来自检索审批）。
-                            提供时跳过 analyze_query，直接用该主题检索，
-                            避免对中文查询二次翻译得到空主题。
-            approved_keywords: 用户已确认的关键词，提供时直接用于策略生成。
-
-        Returns:
-            RetrievalResult with papers and metadata
+            approved_topic: 用户已确认的规范化主题。
+            approved_keywords: 用户已确认的关键词。
+            year_range: Optional (start_year, end_year) from user query.
+            min_count: Optional user-specified minimum paper count.
         """
         errors = []
 
@@ -391,11 +421,13 @@ class RetrievalAgent:
         # Step 2: Generate search strategy
         logger.info("=== Step 2: Generating search strategy ===")
         strategy = self.generate_search_strategy(
-            topic, key_concepts, domain=domain, has_chinese=has_chinese
+            topic, key_concepts, domain=domain, has_chinese=has_chinese,
+            year_range=year_range, min_count=min_count,
         )
         logger.info(
-            f"Search strategy generated: {len(strategy.keywords)} keywords, "
-            f"domain={strategy.domain}, has_chinese={strategy.has_chinese}"
+            f"Search strategy: {len(strategy.keywords)} keywords, "
+            f"domain={strategy.domain}, year_range={strategy.year_range}, "
+            f"max_results={strategy.max_results}"
         )
 
         # Step 3: Execute search
@@ -408,9 +440,10 @@ class RetrievalAgent:
             papers = []
             logger.error(f"Search failed: {e}")
 
-        # Step 4: Select papers
+        # Step 4: Select papers — cap at strategy.max_results so selection
+        # aligns with user-specified min_count (or config default).
         logger.info("=== Step 4: Selecting papers ===")
-        selected_ids = self.select_papers(papers)
+        selected_ids = self.select_papers(papers, max_select=strategy.max_results)
         logger.info(f"Selected {len(selected_ids)} papers for reading")
 
         # Step 5: Human approval (placeholder - integration with workflow)
