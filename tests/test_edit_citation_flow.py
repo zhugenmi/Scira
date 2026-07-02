@@ -100,3 +100,41 @@ def test_citation_flow_kb_miss_then_search_confirm():
         assert edit_citation_state[sid]["candidates"][0]["paper_id"] == "q1"
     finally:
         _clear_edit_state(sid)
+
+
+def test_citation_flow_confirm_candidates_injects_bibliography():
+    """candidates_listed + 用户确认 → 注入 GB/T 7714 + 角标指令，状态清除。"""
+    sid = "test-sid-confirm"
+    try:
+        edit_citation_state[sid] = {
+            "phase": "candidates_listed",
+            "candidates": [
+                {"index": 1, "paper_id": "p1", "title": "Paper A",
+                 "authors": ["Alice"], "published_date": "2024-01-01", "topic": "rag"},
+            ],
+            "pending_topic": "rag",
+            "pending_count": 1,
+        }
+        from src.mcp.server import _is_confirmation
+        assert _is_confirmation("用这些") is True
+
+        # 模拟 server.py 确认分支
+        from src.core.kb_context import format_bibliography_gbt7714
+        state = edit_citation_state[sid]
+        bib = format_bibliography_gbt7714(state["candidates"])
+        directive = (
+            "已确认使用以下参考文献：\n\n"
+            f"{bib}\n\n"
+            "指令：输出一个 EDIT SECTION 替换「## 参考文献」节"
+            "（若不存在则新增到文末）；并输出 0~N 个 EDIT SECTION 在正文相关章节"
+            "插入 [n] 角标，n 对应清单序号。不要编造清单外的引用。"
+        )
+        edit_citation_state.pop(sid, None)
+
+        assert "## 参考文献" in bib
+        assert "[1]" in bib and "Paper A" in bib
+        assert "EDIT SECTION" in directive
+        assert "[n]" in directive
+        assert sid not in edit_citation_state
+    finally:
+        _clear_edit_state(sid)
