@@ -1,5 +1,8 @@
 """Tests for user-specified retrieval constraints (year range, min count)."""
-from src.agents.intent import _extract_constraints_fallback
+import json
+from unittest.mock import patch
+
+from src.agents.intent import IntentAgent, _extract_constraints_fallback
 
 
 def test_fallback_recent_n_years_chinese_arabic():
@@ -41,3 +44,41 @@ def test_fallback_past_n_years_english():
     import datetime
     today = datetime.date.today()
     assert yr == (today.year - 5 + 1, today.year)
+
+
+def test_intent_analyze_parses_llm_year_range_and_min_count():
+    """LLM-returned year_range and min_count should flow into IntentResult."""
+    fake_json = json.dumps({
+        "intent": "search",
+        "workflow_mode": "search",
+        "confidence": 0.9,
+        "reasoning": "user wants KG papers",
+        "extracted_topic": "knowledge graph",
+        "year_range": [2021, 2026],
+        "min_count": 20,
+    })
+    with patch("src.agents.base.BaseAgent.invoke", return_value=fake_json):
+        agent = IntentAgent()
+        result = agent.analyze("最近5年知识图谱，不少于20篇")
+    assert result.year_range == (2021, 2026)
+    assert result.min_count == 20
+
+
+def test_intent_analyze_falls_back_to_regex_when_llm_omits():
+    """If LLM returns null for constraints, regex fallback fills them."""
+    fake_json = json.dumps({
+        "intent": "search",
+        "workflow_mode": "search",
+        "confidence": 0.9,
+        "reasoning": "user wants KG papers",
+        "extracted_topic": "knowledge graph",
+        "year_range": None,
+        "min_count": None,
+    })
+    with patch("src.agents.base.BaseAgent.invoke", return_value=fake_json):
+        agent = IntentAgent()
+        result = agent.analyze("最近5年知识图谱，不少于20篇")
+    import datetime
+    today = datetime.date.today()
+    assert result.year_range == (today.year - 5 + 1, today.year)
+    assert result.min_count == 20
