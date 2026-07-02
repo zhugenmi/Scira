@@ -96,6 +96,41 @@ class TestCAJParser:
             except CAJParseError:
                 pass
 
+    def test_convert_binary_caj_missing_library(self, tmp_path, monkeypatch):
+        """
+        真二进制 CAJ 且 caj2pdf 未安装时，应尝试自动安装；
+        模拟安装失败，应抛出 CAJParseError 并附带安装命令。
+        """
+        caj_path = tmp_path / "test.caj"
+        # 写入伪装成真 CAJ 的内容（不以 %PDF 开头）
+        caj_path.write_bytes(b"CAJFILE\x00\x01\x02")
+        out_path = tmp_path / "out.pdf"
+
+        # 模拟 import caj2pdf 失败
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "caj2pdf" or name.startswith("caj2pdf."):
+                raise ImportError("No module named 'caj2pdf'")
+            return original_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", mock_import)
+
+        # 模拟 pip install 失败
+        import subprocess
+        original_run = subprocess.run
+
+        def mock_run(cmd, **kwargs):
+            if "pip" in str(cmd) and "caj2pdf" in str(cmd):
+                raise subprocess.CalledProcessError(1, cmd)
+            return original_run(cmd, **kwargs)
+
+        monkeypatch.setattr(subprocess, "run", mock_run)
+
+        with pytest.raises(CAJParseError, match="安装.*失败|caj2pdf"):
+            convert_caj_to_pdf(str(caj_path), str(out_path))
+
     def test_convert_missing_file_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
             convert_caj_to_pdf(str(tmp_path / "nope.caj"), str(tmp_path / "out.pdf"))
