@@ -6,7 +6,6 @@ the server/test infrastructure supports it. This test documents the coverage gap
 and serves as a baseline to confirm the test infrastructure works.
 """
 
-import json
 from unittest.mock import MagicMock, patch
 
 from src.mcp.server import edit_citation_state, _clear_edit_state
