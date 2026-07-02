@@ -1,6 +1,5 @@
 # tests/test_orchestrator_kb_summary.py
 from unittest.mock import patch
-from src.agents.intent import IntentAgent
 from src.agents.orchestrator import OrchestratorAgent
 
 
