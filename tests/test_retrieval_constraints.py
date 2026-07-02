@@ -154,6 +154,11 @@ def test_execute_search_post_filters_by_year_range():
     assert "p1" in ids and "p2" in ids and "p4" in ids
     assert "p3" not in ids
 
+    # Verify MCP year param was forwarded (Semantic Scholar consumes it)
+    mock_post.assert_called_once()
+    body = mock_post.call_args[1].get("json") or {}
+    assert body.get("year") == "2021-", f"expected year='2021-', got {body.get('year')!r}"
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -170,7 +175,7 @@ def _fake_llm_response(json_str: str) -> str:
 
 def test_e2e_user_constraints_flow_to_strategy():
     """IntentAgent + RetrievalAgent together: '最近5年...不少于20篇' -> strategy."""
-    from src.agents.intent import IntentAgent, IntentType
+    from src.agents.intent import IntentAgent
 
     fake_json = json.dumps({
         "intent": "search",

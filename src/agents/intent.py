@@ -313,6 +313,7 @@ class IntentAgent(BaseAgent):
         检索和下载统一归为 search 模式（检索后自动下载）。
         """
         msg = user_message or ""
+        fb_year, fb_min = _extract_constraints_fallback(user_message)
         has_report = any(k in msg for k in ("综述", "报告", "写一篇", "写论文", "生成论文", "review", "survey"))
         has_search = any(k in msg for k in (
             "检索", "查找", "搜索", "下载", "获取", "search", "find", "look up", "download", "fetch",
@@ -334,6 +335,8 @@ class IntentAgent(BaseAgent):
                 confidence=0.8,
                 reasoning=f"keyword fallback (list_kb): {err}",
                 extracted_topic=None,
+                year_range=fb_year,
+                min_count=fb_min,
             )
 
         if has_report:
@@ -343,6 +346,8 @@ class IntentAgent(BaseAgent):
                 confidence=0.6,
                 reasoning=f"keyword fallback (report): {err}",
                 extracted_topic=msg,
+                year_range=fb_year,
+                min_count=fb_min,
             )
         if has_search:
             return IntentResult(
@@ -351,6 +356,8 @@ class IntentAgent(BaseAgent):
                 confidence=0.6,
                 reasoning=f"keyword fallback (search): {err}",
                 extracted_topic=msg,
+                year_range=fb_year,
+                min_count=fb_min,
             )
         if has_abstract:
             return IntentResult(
@@ -359,6 +366,8 @@ class IntentAgent(BaseAgent):
                 confidence=0.7,
                 reasoning=f"keyword fallback (abstract): {err}",
                 extracted_topic=msg,
+                year_range=fb_year,
+                min_count=fb_min,
             )
         if has_intro:
             return IntentResult(
@@ -367,6 +376,8 @@ class IntentAgent(BaseAgent):
                 confidence=0.7,
                 reasoning=f"keyword fallback (introduction): {err}",
                 extracted_topic=msg,
+                year_range=fb_year,
+                min_count=fb_min,
             )
         if has_conclusion:
             return IntentResult(
@@ -375,6 +386,8 @@ class IntentAgent(BaseAgent):
                 confidence=0.7,
                 reasoning=f"keyword fallback (conclusion): {err}",
                 extracted_topic=msg,
+                year_range=fb_year,
+                min_count=fb_min,
             )
         # 默认完整流程（保守：不漏掉用户的综述需求）
         return IntentResult(
@@ -383,6 +396,8 @@ class IntentAgent(BaseAgent):
             confidence=0.4,
             reasoning=f"keyword fallback (default full): {err}",
             extracted_topic=msg,
+            year_range=fb_year,
+            min_count=fb_min,
         )
 
 
