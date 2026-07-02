@@ -83,7 +83,8 @@ interface WritingCardData {
   timerEnd?: number | null
 }
 interface ReviewCardData {
-  revision_feedback?: string
+  // 后端 reviewer.py 把 revision_feedback 构造成 Dict，历史会话里可能持久化为 string。
+  revision_feedback?: string | Record<string, any>
   final_review?: string
   expanded?: boolean
   generating?: boolean
@@ -1516,40 +1517,46 @@ export default function ChatView({ sessionId: initialSessionId, pendingMessage, 
               )}
 
               {message.role === 'assistant' && message.outlineCard && (
-                <OutlineCard
-                  data={{
-                    ...message.outlineCard,
-                    timerStart: message.outlineCard.timerStart ?? message.phaseTimers?.outline?.start ?? null,
-                    timerEnd: message.outlineCard.timerEnd ?? message.phaseTimers?.outline?.end ?? null,
-                  }}
-                  onToggle={() => setMessages(prev => prev.map(m =>
-                    m.id === message.id ? { ...m, outlineCard: { ...m.outlineCard!, expanded: !m.outlineCard!.expanded } } : m
-                  ))}
-                />
+                <MessageErrorBoundary label="大纲卡片">
+                  <OutlineCard
+                    data={{
+                      ...message.outlineCard,
+                      timerStart: message.outlineCard.timerStart ?? message.phaseTimers?.outline?.start ?? null,
+                      timerEnd: message.outlineCard.timerEnd ?? message.phaseTimers?.outline?.end ?? null,
+                    }}
+                    onToggle={() => setMessages(prev => prev.map(m =>
+                      m.id === message.id ? { ...m, outlineCard: { ...m.outlineCard!, expanded: !m.outlineCard!.expanded } } : m
+                    ))}
+                  />
+                </MessageErrorBoundary>
               )}
               {message.role === 'assistant' && message.writingCard && (
-                <WritingCard
-                  data={{
-                    ...message.writingCard,
-                    timerStart: message.writingCard.timerStart ?? message.phaseTimers?.writing?.start ?? null,
-                    timerEnd: message.writingCard.timerEnd ?? message.phaseTimers?.writing?.end ?? null,
-                  }}
-                  onToggle={() => setMessages(prev => prev.map(m =>
-                    m.id === message.id ? { ...m, writingCard: { ...m.writingCard!, expanded: !m.writingCard!.expanded } } : m
-                  ))}
-                />
+                <MessageErrorBoundary label="写作卡片">
+                  <WritingCard
+                    data={{
+                      ...message.writingCard,
+                      timerStart: message.writingCard.timerStart ?? message.phaseTimers?.writing?.start ?? null,
+                      timerEnd: message.writingCard.timerEnd ?? message.phaseTimers?.writing?.end ?? null,
+                    }}
+                    onToggle={() => setMessages(prev => prev.map(m =>
+                      m.id === message.id ? { ...m, writingCard: { ...m.writingCard!, expanded: !m.writingCard!.expanded } } : m
+                    ))}
+                  />
+                </MessageErrorBoundary>
               )}
               {message.role === 'assistant' && message.reviewCard && (
-                <ReviewCard
-                  data={{
-                    ...message.reviewCard,
-                    timerStart: message.reviewCard.timerStart ?? message.phaseTimers?.review?.start ?? null,
-                    timerEnd: message.reviewCard.timerEnd ?? message.phaseTimers?.review?.end ?? null,
-                  }}
-                  onToggle={() => setMessages(prev => prev.map(m =>
-                    m.id === message.id ? { ...m, reviewCard: { ...m.reviewCard!, expanded: !m.reviewCard!.expanded } } : m
-                  ))}
-                />
+                <MessageErrorBoundary label="审查卡片">
+                  <ReviewCard
+                    data={{
+                      ...message.reviewCard,
+                      timerStart: message.reviewCard.timerStart ?? message.phaseTimers?.review?.start ?? null,
+                      timerEnd: message.reviewCard.timerEnd ?? message.phaseTimers?.review?.end ?? null,
+                    }}
+                    onToggle={() => setMessages(prev => prev.map(m =>
+                      m.id === message.id ? { ...m, reviewCard: { ...m.reviewCard!, expanded: !m.reviewCard!.expanded } } : m
+                    ))}
+                  />
+                </MessageErrorBoundary>
               )}
 
               {message.role === 'assistant' && message.workflowStatus && (
