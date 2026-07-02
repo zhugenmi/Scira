@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from src.agents.base import BaseAgent
 from src.agents.prompts import INTENT_SYSTEM, INTENT_ANALYZE_PROMPT
@@ -93,6 +93,81 @@ def _extract_json(text: str) -> Optional[Dict[str, Any]]:
         return json.loads(m.group())
     except json.JSONDecodeError:
         return None
+
+
+_CN_NUMERAL_MAP = {
+    "零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
+    "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
+}
+
+
+def _cn_numeral_to_int(s: str) -> Optional[int]:
+    """Convert a Chinese numeral string (1-99) to int. Returns None if not matched."""
+    if not s:
+        return None
+    if s.isdigit():
+        try:
+            return int(s)
+        except ValueError:
+            return None
+    if len(s) == 1:
+        return _CN_NUMERAL_MAP.get(s)
+    # e.g. 十五 / 二十 / 二十五
+    if s.startswith("十"):
+        rest = _CN_NUMERAL_MAP.get(s[1:], 0)
+        return 10 + rest if rest or s[1:] == "零" else 10
+    if "十" in s:
+        parts = s.split("十")
+        tens = _CN_NUMERAL_MAP.get(parts[0], 0) or 1
+        ones = _CN_NUMERAL_MAP.get(parts[1], 0) if parts[1] else 0
+        return tens * 10 + ones
+    return None
+
+
+def _extract_constraints_fallback(
+    user_message: str,
+) -> Tuple[Optional[Tuple[int, int]], Optional[int]]:
+    """Regex-based fallback for extracting year_range and min_count from user message.
+
+    Covers Chinese ('最近N年/近N年/N年内') and English ('past/last N years'),
+    plus '不少于/至少/最少 N 篇' and 'N 篇以上'. Returns (year_range, min_count),
+    either may be None.
+    """
+    import datetime
+
+    if not user_message:
+        return None, None
+
+    today = datetime.date.today()
+    year_range: Optional[Tuple[int, int]] = None
+    min_count: Optional[int] = None
+
+    # Year range: Chinese with arabic or numeral
+    # 最近5年 / 近五年 / 5年内
+    m = re.search(r"(?:最近|近|过去)?\s*([0-9一二三四五六七八九十两]{1,3})\s*年(?:内|内的|的)?", user_message)
+    if m:
+        n = _cn_numeral_to_int(m.group(1))
+        if n and 1 <= n <= 30:
+            year_range = (today.year - n + 1, today.year)
+
+    # English: past/last N years
+    m_en = re.search(r"(?:past|last|recent)\s+(\d{1,2})\s+years?", user_message, re.IGNORECASE)
+    if m_en and not year_range:
+        n = int(m_en.group(1))
+        if 1 <= n <= 30:
+            year_range = (today.year - n + 1, today.year)
+
+    # Min count: 不少于/至少/最少 N 篇
+    m_mc = re.search(r"(?:不少于|至少|最少|不小于)\s*(\d{1,4})\s*篇", user_message)
+    if m_mc:
+        min_count = int(m_mc.group(1))
+    else:
+        # N 篇以上
+        m_above = re.search(r"(\d{1,4})\s*篇\s*以上", user_message)
+        if m_above:
+            min_count = int(m_above.group(1))
+
+    return year_range, min_count
 
 
 class IntentAgent(BaseAgent):
