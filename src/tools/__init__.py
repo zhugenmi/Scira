@@ -33,6 +33,17 @@ from src.tools.format_utils import (
     format_citation,
 )
 
+# Text Extractor
+from src.tools.text_extractor import (
+    PaperTextExtractor,
+    TextExtractionError,
+)
+
+# Paper Info Extractor
+from src.tools.paper_info_extractor import (
+    PaperInfoExtractor,
+)
+
 __all__ = [
     # PDF Parser
     "PDFParser",
@@ -51,4 +62,9 @@ __all__ = [
     "PaperFormatter",
     "ReferenceManager",
     "format_citation",
+    # Text Extractor
+    "PaperTextExtractor",
+    "TextExtractionError",
+    # Paper Info Extractor
+    "PaperInfoExtractor",
 ]
