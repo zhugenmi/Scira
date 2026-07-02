@@ -16,8 +16,6 @@ MIN_TOTAL_CHARS = 100
 MIN_CHARS_PER_PAGE = 20
 # OCR 最大处理页数
 MAX_OCR_PAGES = 50
-# OCR 每页超时（秒）
-OCR_PAGE_TIMEOUT = 120
 
 
 class TextExtractionError(Exception):
