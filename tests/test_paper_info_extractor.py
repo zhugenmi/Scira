@@ -1,16 +1,8 @@
 import json
-import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from src.tools.paper_info_extractor import PaperInfoExtractor
 
-
-class FakeResponse:
-    content = "mock"
-
-class FakeLLM:
-    def invoke(self, messages, **kwargs):
-        return FakeResponse()
 
 def test_extract_valid_json():
     """正常 LLM 返回 JSON 应正确解析。"""
@@ -79,3 +71,11 @@ def test_extract_json_retry_exhausted():
     result = extractor.extract("some text")
     assert result["title"] == ""
     assert result["metadata_quality"] == "partial"
+
+
+def test_parse_response_strips_markdown_code_block():
+    """_parse_response 应能去除 markdown 代码块包裹。"""
+    extractor = PaperInfoExtractor()
+    raw = '```json\n{"title": "Test", "authors": [], "abstract": ""}\n```'
+    result = extractor._parse_response(raw)
+    assert result["title"] == "Test"
