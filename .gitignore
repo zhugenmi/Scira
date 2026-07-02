@@ -63,7 +63,6 @@ htmlcov/
 .cache/
 CLAUDE.md
 docs/
-src/mcp/
 
 frontend/node_modules/
 
