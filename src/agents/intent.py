@@ -72,6 +72,8 @@ class IntentResult:
     confidence: float
     reasoning: str
     extracted_topic: Optional[str] = None
+    year_range: Optional[Tuple[int, int]] = None
+    min_count: Optional[int] = None
 
 
 def _extract_json(text: str) -> Optional[Dict[str, Any]]:
@@ -255,12 +257,43 @@ class IntentAgent(BaseAgent):
             if workflow_mode != expected_mode and intent != IntentType.UNKNOWN:
                 workflow_mode = expected_mode
 
+            # 用户约束（年份范围 / 数量）：LLM 抽取优先，正则兜底补缺
+            llm_year = parsed.get("year_range")
+            llm_min_count = parsed.get("min_count")
+
+            year_range = None
+            if isinstance(llm_year, list) and len(llm_year) == 2:
+                try:
+                    y1, y2 = int(llm_year[0]), int(llm_year[1])
+                    if 1900 <= y1 <= 2100 and 1900 <= y2 <= 2100 and y1 <= y2:
+                        year_range = (y1, y2)
+                except (TypeError, ValueError):
+                    pass
+
+            try:
+                mc_raw = llm_min_count
+                min_count = int(mc_raw) if mc_raw is not None else None
+                if min_count is not None and min_count <= 0:
+                    min_count = None
+            except (TypeError, ValueError):
+                min_count = None
+
+            # 正则兜底：LLM 没给的字段从原文再抽一遍
+            if year_range is None or min_count is None:
+                fb_year, fb_min = _extract_constraints_fallback(user_message)
+                if year_range is None:
+                    year_range = fb_year
+                if min_count is None:
+                    min_count = fb_min
+
             return IntentResult(
                 intent=intent,
                 workflow_mode=workflow_mode,
                 confidence=float(parsed.get("confidence", 0.5)),
                 reasoning=parsed.get("reasoning", ""),
                 extracted_topic=parsed.get("extracted_topic") or None,
+                year_range=year_range,
+                min_count=min_count,
             )
         except Exception as e:
             # LLM 调用失败：走关键词兜底，避免阻塞用户
