@@ -330,14 +330,28 @@ export default function KnowledgeBase({ onReadPaper }: KnowledgeBaseProps) {
         body: formData,
       })
       if (res.ok) {
+        const data = await res.json()
+        const quality = data.metadata_quality
+        let msg = `「${data.title}」导入成功！`
+        if (quality === 'partial') {
+          msg += '\n\n部分信息未能自动提取，可在论文详情中手动补充。'
+        }
+        alert(msg)
         setShowAddPaper(false)
         loadKnowledgeBase()
       } else {
-        const data = await res.json()
-        alert(data.detail || '导入失败')
+        const data = await res.json().catch(() => ({}))
+        const detail: string = data.detail || ''
+        if (detail.includes('caj2pdf') || detail.includes('CAJ')) {
+          alert('该 CAJ 文件需要安装转换工具。\n\n系统已尝试自动安装，若失败请手动执行：\n\npip install git+https://github.com/caj2pdf/caj2pdf.git\n\n详见 https://github.com/caj2pdf/caj2pdf')
+        } else if (detail.includes('PaddleOCR')) {
+          alert('该 PDF 可能为扫描版，需安装 OCR 组件：\n\npip install paddlepaddle paddleocr')
+        } else {
+          alert(detail || '导入失败，请重试')
+        }
       }
     } catch {
-      alert('导入失败')
+      alert('导入失败，请检查网络连接后重试')
     }
     setSubmitting(false)
     if (fileInputRef.current) fileInputRef.current.value = ''
