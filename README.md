@@ -20,9 +20,9 @@
 
 ### 🔎 文献检索
 
-接入 **21 个学术平台**，并行检索 + 智能合并：
+接入 **23 个学术平台**，并行检索 + 智能合并：
 
-arXiv · Semantic Scholar · BioRxiv · MedRxiv · Google Scholar · IACR ePrint · Crossref · OpenAlex · PMC · CORE · Europe PMC · DBLP · OpenAIRE · CiteSeerX · DOAJ · BASE · Unpaywall · Zenodo · HAL · SSRN · PubMed
+arXiv · Semantic Scholar · BioRxiv · MedRxiv · Google Scholar · IACR ePrint · Crossref · OpenAlex · PMC · CORE · Europe PMC · DBLP · OpenAIRE · CiteSeerX · DOAJ · BASE · Unpaywall · Zenodo · HAL · SSRN · PubMed · CNKI知网 · 万方
 
 - **并行调度**：`asyncio` 同时发起所有源请求，按响应速度分级（快源 arXiv/Crossref、慢源 Google Scholar/CiteSeerX），达到 `max_results` 后取消未完成的慢源。
 - **超时控制**：每源独立超时（20–35s），单源失败不影响整体。
@@ -100,7 +100,7 @@ scira/
 │   ├── mcp/                      # MCP 服务
 │   │   ├── server.py             # API 服务入口
 │   │   └── paper_search_mcp/     # 论文搜索/下载 MCP
-│   │       └── academic_platforms/  # 21 个学术平台集成
+│   │       └── academic_platforms/  # 23 个学术平台集成
 │   ├── tools/                    # 工具函数
 │   │   ├── pdf_parser.py         # PDF 解析
 │   │   └── format_utils.py       # 格式化工具
@@ -180,23 +180,6 @@ python src/main.py -i                                  # 交互模式
 3. 看到两个新窗口分别显示后端、前端启动日志即表示成功。
 4. 浏览器访问 http://localhost:5173
 5. 关闭：直接关闭弹出的"Scira Backend"与"Scira Frontend"窗口。
-
-## 📡 API
-
-| 接口 | 方法 | 说明 |
-|------|------|------|
-| `/api/chat/send` | POST | 发送聊天消息（多轮对话，自动识别阅读模式）|
-| `/api/chat/sessions` | GET | 列出会话 |
-| `/api/workflow/start` | POST | 启动研究工作流 |
-| `/api/workflow/status/{task_id}` | GET | 工作流状态 |
-| `/api/workflow/approve-download` | POST | 人工确认下载候选论文 |
-| `/api/paper-search/search` | POST | 搜索论文（21 源并行）|
-| `/api/papers/topics` | GET / POST | 列出 / 新建文献分类 |
-| `/api/papers/{topic}` | POST | 添加文献条目 |
-| `/api/papers/{topic}/import-pdf` | POST | 上传 PDF/CAJ 入库 |
-| `/api/papers/{topic}/import-citation` | POST | BibTeX/APA 引用文本入库 |
-| `/api/papers/{topic}/{paper_id}/fetch-online` | POST | 按标题在线补全 PDF |
-| `/api/paper-reading/{paper_id}` | POST | 触发单篇阅读模式 |
 
 ## 💬 使用
 
