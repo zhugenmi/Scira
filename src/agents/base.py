@@ -16,7 +16,6 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from config.settings import get_config, get_llm_client, SciraConfig
 from src.utils.logger import record_token_usage, logger
 
-
 class BaseAgent(ABC):
     """
     Base class for all Scira agents.
@@ -118,6 +117,105 @@ class BaseAgent(ABC):
             content = chunk.content if hasattr(chunk, 'content') else str(chunk)
             chunks.append(content)
             if token_callback and content:
+                token_callback(content)
+
+        return "".join(chunks)
+
+    def invoke_with_tools(
+        self,
+        prompt: str,
+        tools: List[Any],
+        messages: Optional[List[Any]] = None,
+    ) -> Any:
+        """
+        Invoke the agent with tool-calling support.
+
+        Binds tools to the LLM, sends the prompt, returns the raw AIMessage
+        (which may contain `content` and/or `tool_calls`). Caller executes
+        tool calls and re-invokes with ToolMessage results to continue the loop.
+
+        Degradation: if the provider doesn't support `bind_tools` (raises
+        NotImplementedError / AttributeError) or the API rejects the request,
+        falls back to plain `invoke()`. Caller detects missing `tool_calls`
+        and routes to IntentAgent fallback.
+
+        Args:
+            prompt: User prompt
+            tools: List of LangChain tool objects (e.g. from @tool decorator)
+            messages: Optional additional messages for context
+
+        Returns:
+            AIMessage with `content` (str) and `tool_calls` (list or None)
+        """
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        messages = messages or []
+        chat_messages = [
+            SystemMessage(content=self.system_prompt),
+            *messages,
+            HumanMessage(content=prompt),
+        ]
+
+        try:
+            bound = self.llm.bind_tools(tools)
+        except (NotImplementedError, AttributeError, TypeError) as e:
+            logger.warning(f"bind_tools unsupported, degrading to plain invoke: {e}")
+            response = self.llm.invoke(chat_messages)
+            self._record_token_usage(response)
+            return response
+
+        try:
+            response = bound.invoke(chat_messages)
+            self._record_token_usage(response)
+            return response
+        except Exception as e:
+            logger.warning(f"tool-calling invoke failed, degrading to plain invoke: {e}")
+            response = self.llm.invoke(chat_messages)
+            self._record_token_usage(response)
+            return response
+
+    def stream_final_response(
+        self,
+        messages: List[Any],
+        tools: Optional[List[Any]] = None,
+        token_callback: Optional[Callable[[str], None]] = None,
+    ) -> str:
+        """
+        Stream the LLM's final text response after the tool-calling loop completes.
+
+        Caller builds the full message history (system + user + AIMessage with
+        tool_calls + ToolMessages + ...) and passes it here. We stream the final
+        text response chunk-by-chunk via token_callback.
+
+        Args:
+            messages: Full conversation history including ToolMessages
+            tools: Optional tools to bind (in case LLM wants to call again)
+            token_callback: Called with each text chunk as it arrives
+
+        Returns:
+            Full concatenated response string
+        """
+        try:
+            llm = self.llm.bind_tools(tools) if tools else self.llm
+        except (NotImplementedError, AttributeError, TypeError) as e:
+            logger.warning(f"bind_tools unsupported in stream_final_response: {e}")
+            llm = self.llm
+
+        chunks: List[str] = []
+        try:
+            for chunk in llm.stream(messages):
+                content = getattr(chunk, "content", None) or ""
+                if content:
+                    chunks.append(content)
+                    if token_callback:
+                        token_callback(content)
+        except Exception as e:
+            logger.warning(f"stream_final_response failed, falling back to invoke: {e}")
+            response = self.llm.invoke(messages)
+            self._record_token_usage(response)
+            content = getattr(response, "content", "") or ""
+            chunks.append(content)
+            if token_callback:
                 token_callback(content)
 
         return "".join(chunks)

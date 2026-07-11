@@ -2810,6 +2810,331 @@ async def _stream_paper_reading_in_chat(session_id: str, mode: str, title: str):
     yield f"data: {json.dumps({'type': 'response_done', 'data': {}})}\n\n"
 
 
+def _find_kb_by_name(kb_name: str) -> Optional[Dict[str, Any]]:
+    """根据 KB 名（中文 topic 或英文目录名，子串匹配）定位分类，返回该分类的完整 papers 列表。
+
+    复用 list_papers_in_kb 的匹配逻辑找分类名，然后**直接读 category JSON** 拿原始
+    papers 字段（含 pdf_path / abstract / pdf_url 等）--list_knowledge_bases() 返回的
+    papers 是 stripped 版本（只有 paper_id/title/authors/published_date），批量精读
+    需要 pdf_path 才能定位 PDF 文件。
+
+    未匹配返回 None。
+    """
+    if not kb_name or not kb_name.strip():
+        return None
+    try:
+        from src.core.knowledge import list_knowledge_bases as _list
+        listing = _list()
+    except Exception as e:
+        logger.warning(f"_find_kb_by_name: list_knowledge_bases failed: {e}")
+        return None
+
+    cats = listing.get("categories", []) or []
+    query = kb_name.strip().lower()
+
+    exact = None
+    fuzzy = []
+    for c in cats:
+        topic = (c.get("topic") or "").lower()
+        name = (c.get("name") or "").lower()
+        if topic == query or name == query:
+            exact = c
+            break
+        if query in topic or query in name or topic in query or name in query:
+            fuzzy.append(c)
+
+    target = exact or (fuzzy[0] if fuzzy else None)
+    if target is None:
+        return None
+
+    # 重新读 category JSON 拿完整 paper 字段（含 pdf_path）
+    cat_name = target.get("name", "")
+    if cat_name:
+        try:
+            full_data = _read_topic(cat_name)
+            if full_data:
+                return {
+                    "name": cat_name,
+                    "topic": full_data.get("topic") or target.get("topic", ""),
+                    "count": len(full_data.get("papers", [])),
+                    "papers": full_data.get("papers", []),
+                }
+        except Exception as e:
+            logger.warning(f"_find_kb_by_name: _read_topic({cat_name}) failed: {e}")
+
+    return target
+
+
+async def _stream_batch_reading_in_chat(session_id: str, kb_name: str, mode: str):
+    """批量精读某 KB 所有有 PDF 的论文，逐篇流推 markdown 到 SSE。
+
+    路由层拦截 batch_read_papers_in_kb 工具调用后调用本函数。每篇之间插入分隔符
+    「## 论文 N/M: {title}」让用户看到进度。每篇的精读结果由 analyze_paper_stream
+    内部 save_result() 落盘，下次同篇同模式秒级命中缓存。
+    """
+    from src.core.memory import memory_manager
+    from src.agents.paper_reading import analyze_paper_stream
+
+    target = _find_kb_by_name(kb_name)
+    if target is None:
+        msg = f"未在系统中找到名为「{kb_name}」的知识库。"
+        yield f"data: {json.dumps({'type': 'token', 'data': {'token': msg}})}\n\n"
+        memory_manager.add_message(session_id=session_id, role="assistant", content=msg)
+        yield f"data: {json.dumps({'type': 'response_done', 'data': {}})}\n\n"
+        return
+
+    # 筛选有 PDF 的论文
+    # 优先用 pdf_path 字段；缺失时按标准路径 data/papers/<category>/<paper_id>/<paper_id>.pdf 兜底
+    all_papers = target.get("papers") or []
+    cat_name = target.get("name", "")
+    papers_to_read: List[Dict[str, Any]] = []
+    for p in all_papers:
+        pdf_path = p.get("pdf_path")
+        if pdf_path and (PROJECT_ROOT / pdf_path).exists():
+            papers_to_read.append(p)
+            continue
+        # 兜底：按标准路径构造
+        pid = p.get("paper_id")
+        if pid and cat_name:
+            fallback_rel = f"data/papers/{cat_name}/{pid}/{pid}.pdf"
+            if (PROJECT_ROOT / fallback_rel).exists():
+                p["pdf_path"] = fallback_rel
+                papers_to_read.append(p)
+    skipped = len(all_papers) - len(papers_to_read)
+
+    topic_label = target.get("topic") or target.get("name", kb_name)
+    mode_label = _READING_MODE_LABELS.get(mode, mode)
+    header = (f"好的，将以{mode_label}模式逐篇阅读「{topic_label}」知识库的论文，"
+              f"共 {len(papers_to_read)} 篇有 PDF{'，' + str(skipped) + ' 篇无 PDF 跳过' if skipped else ''}。\n\n")
+    yield f"data: {json.dumps({'type': 'token', 'data': {'token': header}})}\n\n"
+
+    if not papers_to_read:
+        msg = "该知识库中暂无已下载 PDF 的论文，请先在知识库页面获取 PDF 后再试。"
+        yield f"data: {json.dumps({'type': 'token', 'data': {'token': msg}})}\n\n"
+        memory_manager.add_message(
+            session_id=session_id, role="assistant", content=header + msg,
+        )
+        yield f"data: {json.dumps({'type': 'response_done', 'data': {}})}\n\n"
+        return
+
+    full_parts: List[str] = [header]
+    total = len(papers_to_read)
+    loop = asyncio.get_event_loop()
+
+    for idx, paper in enumerate(papers_to_read, 1):
+        title = paper.get("title", "")
+        paper_id = paper.get("paper_id") or hashlib.sha1(title.encode()).hexdigest()[:12]
+        pdf_path_rel = paper.get("pdf_path", "")
+        pdf_abs = PROJECT_ROOT / pdf_path_rel
+
+        separator = f"\n\n## 论文 {idx}/{total}: {title}\n\n"
+        full_parts.append(separator)
+        yield f"data: {json.dumps({'type': 'token', 'data': {'token': separator}})}\n\n"
+
+        # 用 asyncio.Queue 桥接 sync 生成器到 async SSE
+        queue: asyncio.Queue = asyncio.Queue()
+        SENTINEL = object()
+
+        def _producer(p=pdf_abs, pid=paper_id, m=mode):
+            try:
+                for event in analyze_paper_stream(str(p), pid, m, "zh", use_cache=True):
+                    asyncio.run_coroutine_threadsafe(queue.put(event), loop).result()
+            except Exception as exc:
+                logger.error(f"_stream_batch_reading_in_chat producer error: {exc}", exc_info=True)
+                asyncio.run_coroutine_threadsafe(
+                    queue.put({"type": "error", "message": str(exc)}), loop
+                ).result()
+            finally:
+                asyncio.run_coroutine_threadsafe(queue.put(SENTINEL), loop).result()
+
+        loop.run_in_executor(None, _producer)
+
+        # 取本篇的 token 推送，直到 SENTINEL
+        paper_parts: List[str] = []
+        while True:
+            item = await queue.get()
+            if item is SENTINEL:
+                break
+            etype = item.get("type")
+            if etype == "token":
+                text = item.get("text", "")
+                if text:
+                    paper_parts.append(text)
+                    yield f"data: {json.dumps({'type': 'token', 'data': {'token': text}})}\n\n"
+            elif etype == "cache_hit":
+                md = item.get("result", {}).get("markdown", "") or ""
+                if md:
+                    paper_parts.append(md)
+                    yield f"data: {json.dumps({'type': 'token', 'data': {'token': md}})}\n\n"
+                break
+            elif etype == "complete":
+                if not paper_parts:
+                    md = item.get("result", {}).get("markdown", "") or ""
+                    if md:
+                        paper_parts.append(md)
+                        yield f"data: {json.dumps({'type': 'token', 'data': {'token': md}})}\n\n"
+                break
+            elif etype == "error":
+                err_msg = f"精读失败：{item.get('message', '未知错误')}"
+                paper_parts.append(err_msg)
+                yield f"data: {json.dumps({'type': 'token', 'data': {'token': err_msg}})}\n\n"
+                break
+
+        full_parts.extend(paper_parts)
+        logger.info(f"batch_read [{idx}/{total}] done: {title[:50]}")
+
+    footer = f"\n\n---\n{mode_label}阅读完成：共 {total} 篇。"
+    full_parts.append(footer)
+    yield f"data: {json.dumps({'type': 'token', 'data': {'token': footer}})}\n\n"
+
+    markdown = "".join(full_parts)
+    memory_manager.add_message(session_id=session_id, role="assistant", content=markdown)
+    yield f"data: {json.dumps({'type': 'response_done', 'data': {}})}\n\n"
+
+
+async def _handle_tool_call_chat(session_id: str, user_message: str, history: list):
+    """tool-calling 路由：判断用户消息是否需要调用 KB/精读工具。
+
+    返回值：
+    - None：未匹配工具调用，调用方应 fallthrough 到 Orchestrator
+    - async generator：命中工具调用，yield SSE 事件字符串
+
+    流程：
+    1. 用绑定工具的 LLM 调用，拿 AIMessage
+    2. 若无 tool_calls -> 返回 None（让调用方走 Orchestrator）
+    3. 若有 tool_calls -> 按工具类型分发：
+       - list_knowledge_bases / list_papers_in_kb：执行后回灌 LLM，流推最终文本
+       - read_paper：拦截，调 _stream_paper_reading_in_chat（按标题定位）
+       - batch_read_papers_in_kb：拦截，调 _stream_batch_reading_in_chat
+    """
+    from src.agents.base import BaseAgent
+    from src.agents.prompts import TOOL_ROUTER_SYSTEM
+    from src.agents.tools import get_kb_reading_tools
+    from src.core.memory import memory_manager
+    from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+
+    router_agent = BaseAgent(name="tool_router", system_prompt=TOOL_ROUTER_SYSTEM)
+    tools = get_kb_reading_tools()
+    tools_by_name = {t.name: t for t in tools}
+
+    try:
+        ai_msg = router_agent.invoke_with_tools(user_message, tools)
+    except Exception as e:
+        logger.warning(f"_handle_tool_call_chat: invoke_with_tools failed: {e}")
+        return None
+
+    tool_calls = getattr(ai_msg, "tool_calls", None) or []
+    if not tool_calls:
+        # 没调工具 -> 走 Orchestrator fallthrough
+        return None
+
+    # 处理 tool_call：每轮只处理第一个（LLM 应遵守 prompt 约束只调一个）
+    # 流式工具（read_paper / batch_read_papers_in_kb）直接流推 markdown
+    # 非流式工具（list_*）执行后回灌 LLM 让其生成自然语言回复
+    if len(tool_calls) > 1:
+        logger.warning(f"tool-calling router got {len(tool_calls)} tool_calls, only handling the first")
+
+    tc = tool_calls[0]
+    tname = tc.get("name") if isinstance(tc, dict) else tc.name
+    targs = tc.get("args") if isinstance(tc, dict) else tc.args
+    targs = targs or {}
+
+    async def _streaming_generator():
+        # 保存用户消息
+        memory_manager.add_message(
+            session_id=session_id, role="user", content=user_message,
+        )
+        yield f"data: {json.dumps({'type': 'response_start', 'data': {'content': ''}})}\n\n"
+
+        if tname == "read_paper":
+            title = (targs.get("title_or_id") or "").strip()
+            mode = targs.get("mode") or "snap"
+            if not title:
+                yield f"data: {json.dumps({'type': 'token', 'data': {'token': '未提供论文标题，无法精读。'}})}\n\n"
+            else:
+                intro = f"好的，正在用{_READING_MODE_LABELS.get(mode, mode)}模式阅读「{title}」...\n\n"
+                yield f"data: {json.dumps({'type': 'token', 'data': {'token': intro}})}\n\n"
+                async for chunk in _stream_paper_reading_in_chat(session_id, mode, title):
+                    yield chunk
+            yield f"data: {json.dumps({'type': 'response_done', 'data': {}})}\n\n"
+            return
+
+        if tname == "batch_read_papers_in_kb":
+            kb_name = (targs.get("kb_name") or "").strip()
+            mode = targs.get("mode") or "snap"
+            if not kb_name:
+                yield f"data: {json.dumps({'type': 'token', 'data': {'token': '未提供知识库名称，无法批量精读。'}})}\n\n"
+                yield f"data: {json.dumps({'type': 'response_done', 'data': {}})}\n\n"
+                return
+            async for chunk in _stream_batch_reading_in_chat(session_id, kb_name, mode):
+                yield chunk
+            return
+
+        # 非流式工具（list_knowledge_bases / list_papers_in_kb）
+        tool_obj = tools_by_name.get(tname)
+        if tool_obj is None:
+            msg = f"未知工具：{tname}"
+            yield f"data: {json.dumps({'type': 'token', 'data': {'token': msg}})}\n\n"
+            memory_manager.add_message(session_id=session_id, role="assistant", content=msg)
+            yield f"data: {json.dumps({'type': 'response_done', 'data': {}})}\n\n"
+            return
+
+        try:
+            tool_result = tool_obj.invoke(targs)
+        except Exception as e:
+            logger.error(f"tool {tname} invoke failed: {e}", exc_info=True)
+            tool_result = json.dumps({"error": str(e)}, ensure_ascii=False)
+
+        # 用 LLM 基于 tool 结果生成自然语言回复，流推
+        from langchain_core.messages import AIMessage as _AI
+        chat_messages = [
+            SystemMessage(content=TOOL_ROUTER_SYSTEM),
+            HumanMessage(content=user_message),
+            _AI(content="", tool_calls=[
+                {"name": tname, "args": targs, "id": "tc1", "type": "tool_call"}
+            ]),
+            ToolMessage(content=tool_result, tool_call_id="tc1"),
+        ]
+
+        collected: list = []
+        _q: asyncio.Queue = asyncio.Queue()
+        SENTINEL = object()
+        outer_loop = asyncio.get_event_loop()
+
+        def _cb(text, _q=_q, _loop=outer_loop):
+            collected.append(text)
+            try:
+                asyncio.run_coroutine_threadsafe(_q.put(text), _loop).result()
+            except Exception:
+                pass
+
+        def _run(_loop=outer_loop):
+            try:
+                # 不再 bind_tools：tool 已执行完，让 LLM 直接出最终文本
+                router_agent.stream_final_response(chat_messages, tools=None, token_callback=_cb)
+            except Exception as exc:
+                logger.error(f"stream_final_response failed: {exc}", exc_info=True)
+            finally:
+                asyncio.run_coroutine_threadsafe(_q.put(SENTINEL), _loop).result()
+
+        outer_loop.run_in_executor(None, _run)
+
+        while True:
+            item = await _q.get()
+            if item is SENTINEL:
+                break
+            yield f"data: {json.dumps({'type': 'token', 'data': {'token': item}})}\n\n"
+
+        final_text = "".join(collected)
+        if final_text:
+            memory_manager.add_message(
+                session_id=session_id, role="assistant", content=final_text,
+            )
+        yield f"data: {json.dumps({'type': 'response_done', 'data': {}})}\n\n"
+
+    return _streaming_generator()
+
+
 @app.post("/api/chat/stream")
 async def stream_chat_message(request: ChatSendRequest):
     """
@@ -3096,6 +3421,24 @@ async def stream_chat_message(request: ChatSendRequest):
                 metadata={"action": "edit_round"},
             )
             yield f"data: {json.dumps({'type': 'response_done', 'data': {}})}\n\n"
+            return
+
+        # ===== tool-calling 路由 =====
+        # 编辑模式未命中，先让 LLM 决定是否调用 KB 查询/论文精读工具。
+        # 命中工具调用 -> 流式推送结果，结束本轮。
+        # 未命中（LLM 直接回文本）-> fallthrough 到 Orchestrator 走原意图分类。
+        try:
+            tool_gen = await _handle_tool_call_chat(
+                session_id=session.session_id,
+                user_message=request.message,
+                history=session.messages or [],
+            )
+        except Exception as e:
+            logger.warning(f"tool-calling router failed, fallthrough to orchestrator: {e}")
+            tool_gen = None
+        if tool_gen is not None:
+            async for chunk in tool_gen:
+                yield chunk
             return
 
         # 获取会话上下文
