@@ -246,12 +246,12 @@ def test_invoke_with_tools_degrades_on_unsupported_bind(monkeypatch):
 
 # ==================== 工具注册表 ====================
 
-def test_get_kb_reading_tools_returns_five():
-    """工具注册表应返回 5 个工具（含 generate_section_from_kb）。"""
+def test_get_kb_reading_tools_returns_six():
+    """工具注册表应返回 6 个工具（含 generate_section_from_kb 和 answer_question_from_kb）。"""
     from src.agents.tools import get_kb_reading_tools
 
     tools = get_kb_reading_tools()
-    assert len(tools) == 5
+    assert len(tools) == 6
     names = {t.name for t in tools}
     assert names == {
         "list_knowledge_bases",
@@ -259,6 +259,7 @@ def test_get_kb_reading_tools_returns_five():
         "read_paper",
         "batch_read_papers_in_kb",
         "generate_section_from_kb",
+        "answer_question_from_kb",
     }
 
 

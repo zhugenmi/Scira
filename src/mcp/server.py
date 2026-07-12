@@ -3004,6 +3004,142 @@ async def _stream_batch_reading_in_chat(session_id: str, kb_name: str, mode: str
     yield f"data: {json.dumps({'type': 'response_done', 'data': {}})}\n\n"
 
 
+async def _answer_question_from_kb_in_chat(
+    session_id: str,
+    kb_name: str,
+    question: str,
+):
+    """针对 KB 内容的事实性问答：4 阶段编排。
+
+    阶段 1: 批量 lens 精读（命中缓存秒级），只推进度不推正文
+    阶段 2: LLM 整合抽取，标记 incomplete_papers
+    阶段 3: 对 incomplete_papers 补读 PDF（关键词全文搜索），条件触发
+    阶段 4: LLM 合并输出，条件触发（阶段 3 跳过时直接用 synthesis）
+
+    yield SSE 事件字符串。
+    """
+    from src.core.memory import memory_manager
+    from src.agents.paper_reading import analyze_paper
+    from src.agents.kb_qa import KBQAAgent
+    from src.core.pdf_search import search_pdf_for_keywords
+
+    def _sse(token: str) -> str:
+        return f"data: {json.dumps({'type': 'token', 'data': {'token': token}})}\n\n"
+
+    def _sse_done() -> str:
+        return f"data: {json.dumps({'type': 'response_done', 'data': {}})}\n\n"
+
+    # 找 KB
+    target = _find_kb_by_name(kb_name)
+    if target is None:
+        msg = f"未在系统中找到名为「{kb_name}」的知识库。"
+        yield _sse(msg)
+        memory_manager.add_message(session_id=session_id, role="assistant", content=msg)
+        yield _sse_done()
+        return
+
+    papers_to_read = _filter_papers_with_pdfs(target)
+    if not papers_to_read:
+        msg = f"「{target.get('topic') or kb_name}」知识库中暂无已下载 PDF 的论文，无法回答。"
+        yield _sse(msg)
+        memory_manager.add_message(session_id=session_id, role="assistant", content=msg)
+        yield _sse_done()
+        return
+
+    topic_label = target.get("topic") or target.get("name", kb_name)
+    total = len(papers_to_read)
+
+    # ========== 阶段 1: 批量 lens 精读 ==========
+    header = f"正在用精读（lens）模式阅读「{topic_label}」知识库的论文，共 {total} 篇...\n\n"
+    yield _sse(header)
+    yield _sse("（精读结果将用于整合分析，不逐篇展示）\n\n")
+
+    papers_readings: List[Dict[str, Any]] = []
+    loop = asyncio.get_event_loop()
+
+    for idx, paper in enumerate(papers_to_read, 1):
+        title = paper.get("title", "")
+        paper_id = paper.get("paper_id") or hashlib.sha1(title.encode()).hexdigest()[:12]
+        pdf_path_rel = paper.get("pdf_path", "")
+        pdf_abs = PROJECT_ROOT / pdf_path_rel
+
+        yield _sse(f"精读 {idx}/{total}: {title[:60]}...\n")
+
+        # 在 executor 里跑同步的 analyze_paper
+        def _read_one(p=pdf_abs, pid=paper_id):
+            try:
+                return analyze_paper(str(p), pid, "lens", "zh", use_cache=True)
+            except Exception as exc:
+                logger.error(f"analyze_paper failed for {pid}: {exc}", exc_info=True)
+                return {"markdown": "", "error": str(exc)}
+
+        result = await loop.run_in_executor(None, _read_one)
+        if result.get("error"):
+            papers_readings.append({
+                "paper_id": paper_id,
+                "title": title,
+                "markdown": "",
+                "error": result["error"],
+            })
+        else:
+            papers_readings.append({
+                "paper_id": paper_id,
+                "title": title,
+                "markdown": result.get("markdown", ""),
+            })
+
+    # ========== 阶段 2: LLM 整合抽取 ==========
+    yield _sse("\n正在整合分析所有论文的精读结果...\n")
+    agent = KBQAAgent()
+    synth = agent.synthesize(question, papers_readings, kb_name=topic_label)
+    synthesis = synth["synthesis"]
+    incomplete_papers = synth.get("incomplete_papers", [])
+    search_keywords = synth.get("search_keywords", [])
+
+    # ========== 阶段 3: 补读 PDF（条件触发） ==========
+    supplementary: List[Dict[str, Any]] = []
+    if incomplete_papers:
+        yield _sse(f"\n信息不全的论文 {len(incomplete_papers)} 篇，正在补读 PDF...\n")
+        # 建 paper_id -> paper meta 的索引
+        pid_to_paper = {p["paper_id"]: p for p in papers_to_read if p.get("paper_id")}
+        for inc in incomplete_papers:
+            pid = inc.get("paper_id", "")
+            paper_meta = pid_to_paper.get(pid, {})
+            title = inc.get("title") or paper_meta.get("title", "")
+            pdf_path_rel = paper_meta.get("pdf_path", "")
+            if not pdf_path_rel:
+                supplementary.append({
+                    "paper_id": pid, "title": title, "excerpts": [], "status": "not_found",
+                })
+                continue
+            pdf_abs = PROJECT_ROOT / pdf_path_rel
+            excerpts = await loop.run_in_executor(
+                None,
+                lambda p=pdf_abs, kw=search_keywords: search_pdf_for_keywords(p, kw),
+            )
+            if not excerpts:
+                supplementary.append({
+                    "paper_id": pid, "title": title, "excerpts": [], "status": "no_hit",
+                })
+            else:
+                supplementary.append({
+                    "paper_id": pid, "title": title, "excerpts": excerpts, "status": "ok",
+                })
+
+        # ========== 阶段 4: LLM 合并输出（条件触发） ==========
+        final_answer = agent.final_merge(synthesis, supplementary, question)
+    else:
+        # 没有补读，直接用 synthesis 作为最终答案
+        final_answer = synthesis
+
+    # 流式推送最终答案（这里 final_answer 是完整字符串，一次性推）
+    yield _sse("\n" + final_answer + "\n")
+
+    # 写回 memory
+    memory_manager.add_message(session_id=session_id, role="assistant", content=final_answer)
+    yield _sse_done()
+
+
 def _load_paper_brief(paper: Dict[str, Any], cat_name: str) -> str:
     """加载单篇论文的摘要要点：title/authors/year/abstract + 可选 snap 速览。
 
@@ -3342,6 +3478,21 @@ async def _handle_tool_call_chat(session_id: str, user_message: str, history: li
                 yield f"data: {json.dumps({'type': 'response_done', 'data': {}})}\n\n"
                 return
             async for chunk in _stream_batch_reading_in_chat(session_id, kb_name, mode):
+                yield chunk
+            return
+
+        if tname == "answer_question_from_kb":
+            kb_name = (targs.get("kb_name") or "").strip()
+            question = (targs.get("question") or "").strip()
+            if not kb_name:
+                yield f"data: {json.dumps({'type': 'token', 'data': {'token': '未提供知识库名称，无法回答。'}})}\n\n"
+                yield f"data: {json.dumps({'type': 'response_done', 'data': {}})}\n\n"
+                return
+            if not question:
+                yield f"data: {json.dumps({'type': 'token', 'data': {'token': '未提供问题，无法回答。请指明想问什么。'}})}\n\n"
+                yield f"data: {json.dumps({'type': 'response_done', 'data': {}})}\n\n"
+                return
+            async for chunk in _answer_question_from_kb_in_chat(session_id, kb_name, question):
                 yield chunk
             return
 
