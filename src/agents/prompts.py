@@ -704,3 +704,45 @@ WRITER_SECTION_FROM_KB_PROMPT = ACADEMIC_STYLE_RULES + """
 
 # 输出
 直接输出「{section_topic}」章节的正文内容。"""
+
+
+KB_QA_SYNTHESIS_PROMPT = """你是一位科研助手。用户针对某个知识库的论文提出了一个问题。请基于提供的所有论文精读结果，针对问题做信息抽取与整合，输出 JSON。
+
+用户问题：{question}
+
+知识库：{kb_name}（共 {paper_count} 篇论文的精读结果）
+
+论文精读结果：
+{papers_block}
+
+要求：
+1. synthesis：针对用户问题的初步答案。直接回答问题，不要泛泛而谈。输出格式自适应问题类型（清单/表格/段落）。纯文本，不要 Markdown 标题语法（##、**）。
+2. incomplete_papers：精读结果里相关信息不够的论文列表。每项含 paper_id、title、missing（说明缺什么信息）。精读失败（markdown 含"精读失败"）的一律列入。精读结果里明确标注"_论文未明确提及_"的也列入。信息充足的论文不要列入。
+3. search_keywords：用于补读 PDF 的关键词列表（5-10 个）。要跟问题相关 -- 问数据集就给数据集相关词（dataset/benchmark/ImageNet/COCO/数据集/公开数据集等），问方法就给方法相关词。中英文都给。
+
+只返回 JSON，不要 Markdown 代码块：
+{{
+    "synthesis": "针对问题的初步答案",
+    "incomplete_papers": [
+        {{"paper_id": "xxx", "title": "...", "missing": "数据集名称和量级未提及"}}
+    ],
+    "search_keywords": ["dataset", "benchmark", "ImageNet", "数据集"]
+}}"""
+
+
+KB_QA_FINAL_PROMPT = """你是一位科研助手。之前基于论文精读结果给出了初步答案，现在补充了部分论文的 PDF 原文段落。请合并输出最终答案。
+
+用户问题：{question}
+
+初步答案：
+{synthesis}
+
+补读的 PDF 原文段落（按论文分组）：
+{supplementary_block}
+
+要求：
+1. 把补读到的信息合并进初步答案。如果补读段落里有新的数据集名称/量级/方法等，补充到答案里。
+2. 对补读失败或无结果的论文，标注「信息不可得」或「未在 PDF 中提及」。
+3. 输出格式跟初步答案保持一致（不要换风格）。
+4. 纯文本输出，不要 Markdown 标题语法（##、**）。
+5. 直接输出最终答案，不要任何前言或解释。"""
