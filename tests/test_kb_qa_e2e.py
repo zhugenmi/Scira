@@ -59,7 +59,7 @@ def test_e2e_multi_source_fusion_kb_dataset_question():
         pytest.skip("未找到多源数据融合知识库，跳过 E2E 测试")
 
     from unittest.mock import patch
-    with patch("src.core.memory.memory_manager") as mock_mm:
+    with patch("src.core.memory.memory_manager"):
         gen = _answer_question_from_kb_in_chat(
             "e2e-test-session",
             "多源数据融合",

@@ -3113,11 +3113,19 @@ async def _answer_question_from_kb_in_chat(
                 })
                 continue
             pdf_abs = PROJECT_ROOT / pdf_path_rel
-            excerpts = await loop.run_in_executor(
-                None,
-                lambda p=pdf_abs, kw=search_keywords: search_pdf_for_keywords(p, kw),
-            )
-            if not excerpts:
+            def _search_one(p=pdf_abs, kw=search_keywords, pid=pid):
+                try:
+                    return search_pdf_for_keywords(p, kw)
+                except Exception as exc:
+                    logger.error(f"search_pdf_for_keywords failed for {pid}: {exc}", exc_info=True)
+                    return None  # signal failure
+
+            excerpts = await loop.run_in_executor(None, _search_one)
+            if excerpts is None:
+                supplementary.append({
+                    "paper_id": pid, "title": title, "excerpts": [], "status": "failed",
+                })
+            elif not excerpts:
                 supplementary.append({
                     "paper_id": pid, "title": title, "excerpts": [], "status": "no_hit",
                 })

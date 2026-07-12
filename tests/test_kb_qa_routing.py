@@ -1,8 +1,7 @@
 """answer_question_from_kb 工具注册与路由提示词测试。"""
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
-from langchain_core.messages import AIMessage
 
 
 def test_tool_registered_in_get_kb_reading_tools():
@@ -32,14 +31,6 @@ def test_tool_requires_question():
     import json
     result = json.loads(answer_question_from_kb.invoke({"kb_name": "X", "question": ""}))
     assert "error" in result
-
-
-def _make_router_ai_msg(tool_name: str, tool_args: dict) -> AIMessage:
-    """构造一个带 tool_calls 的 AIMessage mock。"""
-    msg = MagicMock(spec=AIMessage)
-    msg.content = ""
-    msg.tool_calls = [{"name": tool_name, "args": tool_args, "id": "tc1", "type": "tool_call"}]
-    return msg
 
 
 @pytest.mark.integration
