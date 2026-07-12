@@ -122,3 +122,93 @@ def test_format_reference_block_shared_helper():
     ref_single = [{"authors": ["Smith"], "title": "Test Paper", "year": "2024"}]
     reviewer_result = reviewer_build_ci(ref_single)
     assert "[1] Smith. Test Paper. 2024" in reviewer_result
+
+
+# ==================== 引用顺序重编号测试 ====================
+
+def test_renumber_citations_basic_first_appearance():
+    """首次出现顺序应决定新编号：[6][1][2] -> [1][2][3]。"""
+    from src.mcp.server import _renumber_citations
+
+    text = "前文[6]提到融合技术。Noh 等人[1]提出 TinyML。Wang 等[2]构建分层架构。"
+    ref_list = [
+        {"authors": ["Noh"], "title": "TinyML", "year": "2025"},
+        {"authors": ["Wang"], "title": "Layered Fusion", "year": "2026"},
+        {"authors": ["Lin"], "title": "Survey", "year": "2025"},
+        {"authors": ["X"], "title": "Y", "year": "2024"},
+        {"authors": ["Z"], "title": "W", "year": "2023"},
+        {"authors": ["Intro"], "title": "Overview", "year": "2026"},
+    ]
+    new_text, new_refs = _renumber_citations(text, ref_list)
+
+    # [6] 首次出现 -> 新 [1]；[1] 第二次出现 -> 新 [2]；[2] 第三次出现 -> 新 [3]
+    assert "[1]提到融合技术" in new_text
+    assert "[2]提出 TinyML" in new_text
+    assert "[3]构建分层架构" in new_text
+    # ref_list 重排：new[0] 应是原 ref_list[5] (Intro), new[1] 是原 [0] (Noh), new[2] 是原 [1] (Wang)
+    assert new_refs[0]["authors"] == ["Intro"]
+    assert new_refs[1]["authors"] == ["Noh"]
+    assert new_refs[2]["authors"] == ["Wang"]
+    # 未被引用的 [3][4] 应从 ref_list 中删除
+    assert len(new_refs) == 3
+
+
+def test_renumber_citations_same_reference_twice():
+    """同一文献多次引用应使用相同新编号。"""
+    from src.mcp.server import _renumber_citations
+
+    text = "Noh 等人[1]提出方法。该方法[1]在边缘端验证。"
+    ref_list = [{"authors": ["Noh"], "title": "TinyML", "year": "2025"}]
+    new_text, new_refs = _renumber_citations(text, ref_list)
+
+    assert new_text.count("[1]") == 2
+    assert len(new_refs) == 1
+    assert new_refs[0]["authors"] == ["Noh"]
+
+
+def test_renumber_citations_multi_citation():
+    """多引用 [n,m] 应分别按首次出现分配新编号。"""
+    from src.mcp.server import _renumber_citations
+
+    # [3,1] 首次出现 -> 3 映射为 1，1 映射为 2，输出 [1,2]
+    # 随后 [2] 首次出现 -> 映射为 3
+    text = "多项研究[3,1]表明。另见[2]。"
+    ref_list = [
+        {"authors": ["A"], "title": "T1", "year": "2026"},
+        {"authors": ["B"], "title": "T2", "year": "2026"},
+        {"authors": ["C"], "title": "T3", "year": "2026"},
+    ]
+    new_text, new_refs = _renumber_citations(text, ref_list)
+
+    assert "[1,2]表明" in new_text
+    assert "[3]。" in new_text
+    # 重排：new[0]=原[2](C), new[1]=原[0](A), new[2]=原[1](B)
+    assert new_refs[0]["authors"] == ["C"]
+    assert new_refs[1]["authors"] == ["A"]
+    assert new_refs[2]["authors"] == ["B"]
+
+
+def test_renumber_citations_no_citations_returns_empty_refs():
+    """正文无引用时，ref_list 应清空（GB/T 7714 只列被引文献）。"""
+    from src.mcp.server import _renumber_citations
+
+    text = "本文综述了多源数据融合领域的发展，未引用具体文献。"
+    ref_list = [{"authors": ["A"], "title": "T", "year": "2026"}]
+    new_text, new_refs = _renumber_citations(text, ref_list)
+
+    assert new_text == text
+    assert new_refs == []
+
+
+def test_renumber_citations_preserves_text_outside_brackets():
+    """正文中非引用的方括号（如 [2 ms]）不应被误处理。"""
+    from src.mcp.server import _renumber_citations
+
+    text = "推理延迟仅[2 ms]，Noh 等人[1]提出方法。"
+    ref_list = [{"authors": ["Noh"], "title": "TinyML", "year": "2025"}]
+    new_text, new_refs = _renumber_citations(text, ref_list)
+
+    # [2 ms] 不应被改动（非纯数字），[1] 应重编号为 [1]（首次出现）
+    assert "[2 ms]" in new_text
+    assert "[1]提出方法" in new_text
+    assert len(new_refs) == 1
