@@ -313,3 +313,90 @@ def test_run_workflow_from_knowledge_bases_empty_category_short_circuits(tmp_pat
     )
     assert not called["outline"]
     assert "所选知识库中没有可用论文" in state.get("error_messages", [])
+
+
+def test_run_workflow_from_knowledge_bases_sorts_papers_oldest_first(tmp_path, monkeypatch):
+    """KB 写作应按 published_date 升序遍历(旧->新),不论 JSON 文件里的存储顺序。
+    综述按时间脉络从早期工作写到最新进展。"""
+    from src.core import workflow as wfmod
+
+    papers_dir = tmp_path / "data" / "papers" / "rl"
+    papers_dir.mkdir(parents=True)
+    # 故意打乱顺序:2022 -> 2020 -> 2021,期望遍历顺序为 2020 -> 2021 -> 2022
+    (papers_dir / "rl.json").write_text(json.dumps({
+        "category": "rl", "topic": "强化学习", "count": 3,
+        "papers": [
+            {"paper_id": "p2022", "title": "New", "authors": [],
+             "abstract": "", "published_date": "2022-06-01", "pdf_url": ""},
+            {"paper_id": "p2020", "title": "Old", "authors": [],
+             "abstract": "", "published_date": "2020-01-01", "pdf_url": ""},
+            {"paper_id": "p2021", "title": "Mid", "authors": [],
+             "abstract": "", "published_date": "2021-03-15", "pdf_url": ""},
+        ],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    monkeypatch.setattr(wfmod, "_match_existing_category", lambda *a, **k: None)
+    monkeypatch.setattr("src.agents.reader.sanitize_paper_id_for_filename", lambda x: x)
+    monkeypatch.setattr(wfmod, "synthesize_from_reading_summaries", lambda ld, t: {
+        "global_knowledge": {"research_background": "bg"},
+        "literature_clusters": [{"cluster_id": "c1", "theme": t, "papers": ld}],
+    })
+
+    captured = {}
+    def fake_outline(state):
+        captured["order"] = [p["paper_id"] for p in state.get("literature_data", [])]
+        state["outline"] = {"title": "T", "sections": []}
+        return state
+    monkeypatch.setattr(wfmod, "outline_node", fake_outline)
+    monkeypatch.setattr(wfmod, "writing_node", lambda s: {**s, "final_paper": "x", "chapter_drafts": {}})
+    monkeypatch.setattr(wfmod, "revision_node", lambda s: {**s, "final_review": "f", "abstract": "a"})
+    monkeypatch.setattr(wfmod, "sync_token_usage_to_state", lambda s: None)
+    monkeypatch.chdir(tmp_path)
+
+    wfmod.run_workflow_from_knowledge_bases(categories=["rl"], topic="RL综述")
+
+    assert captured["order"] == ["p2020", "p2021", "p2022"], \
+        f"应当旧->新遍历,实际顺序: {captured['order']}"
+
+
+def test_run_workflow_from_knowledge_bases_undated_papers_go_last(tmp_path, monkeypatch):
+    """无 published_date 或日期解析失败的论文放最后,避免污染时间脉络。"""
+    from src.core import workflow as wfmod
+
+    papers_dir = tmp_path / "data" / "papers" / "rl"
+    papers_dir.mkdir(parents=True)
+    (papers_dir / "rl.json").write_text(json.dumps({
+        "category": "rl", "topic": "强化学习", "count": 3,
+        "papers": [
+            {"paper_id": "no_date", "title": "Unknown", "authors": [],
+             "abstract": "", "published_date": "", "pdf_url": ""},
+            {"paper_id": "bad_date", "title": "Bad", "authors": [],
+             "abstract": "", "published_date": "not-a-date", "pdf_url": ""},
+            {"paper_id": "p2021", "title": "Mid", "authors": [],
+             "abstract": "", "published_date": "2021-03-15", "pdf_url": ""},
+        ],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    monkeypatch.setattr(wfmod, "_match_existing_category", lambda *a, **k: None)
+    monkeypatch.setattr("src.agents.reader.sanitize_paper_id_for_filename", lambda x: x)
+    monkeypatch.setattr(wfmod, "synthesize_from_reading_summaries", lambda ld, t: {
+        "global_knowledge": {"research_background": "bg"},
+        "literature_clusters": [{"cluster_id": "c1", "theme": t, "papers": ld}],
+    })
+
+    captured = {}
+    def fake_outline(state):
+        captured["order"] = [p["paper_id"] for p in state.get("literature_data", [])]
+        state["outline"] = {"title": "T", "sections": []}
+        return state
+    monkeypatch.setattr(wfmod, "outline_node", fake_outline)
+    monkeypatch.setattr(wfmod, "writing_node", lambda s: {**s, "final_paper": "x", "chapter_drafts": {}})
+    monkeypatch.setattr(wfmod, "revision_node", lambda s: {**s, "final_review": "f", "abstract": "a"})
+    monkeypatch.setattr(wfmod, "sync_token_usage_to_state", lambda s: None)
+    monkeypatch.chdir(tmp_path)
+
+    wfmod.run_workflow_from_knowledge_bases(categories=["rl"], topic="RL综述")
+
+    # 有日期的论文先遍历,无/坏日期的论文放最后(stable sort 保持 no_date 在 bad_date 前)
+    assert captured["order"] == ["p2021", "no_date", "bad_date"], \
+        f"无日期论文应放最后,实际顺序: {captured['order']}"

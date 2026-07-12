@@ -29,6 +29,42 @@ def test_academic_style_rules_no_unescaped_braces():
     assert "}" not in ACADEMIC_STYLE_RULES
 
 
+def test_academic_style_rules_contains_5_7_decitation_principle():
+    """ACADEMIC_STYLE_RULES 应包含 5.7 去引用化原则。"""
+    assert "5.7 去引用化原则" in ACADEMIC_STYLE_RULES
+    assert "二次详细描述" in ACADEMIC_STYLE_RULES
+    assert "演进规律总结" in ACADEMIC_STYLE_RULES
+    assert "共性瓶颈提炼" in ACADEMIC_STYLE_RULES
+
+
+def test_academic_style_rules_self_check_includes_new_items():
+    """自检清单应包含第9条（无二次详细描述）和第10条（同句不重复标注）。"""
+    assert "9. 发展趋势章节无对前文已介绍文献的二次详细描述" in ACADEMIC_STYLE_RULES
+    assert "10. 同一文献在同句或相邻句中不重复标注" in ACADEMIC_STYLE_RULES
+
+
+def test_academic_style_rules_no_duplicate_citation_constraint():
+    """第一节应包含同句不重复标注约束。"""
+    assert "同一文献在同一句或相邻两句中不得重复标注" in ACADEMIC_STYLE_RULES
+
+
+def test_academic_style_rules_5_6_examples_do_not_expand_methods():
+    """5.6 范例不应鼓励展开单篇方法，应改为锚点式。"""
+    # 旧表述鼓励复述单篇贡献，应已移除
+    assert "Noh 等人[1]在边缘端的高精度验证为后续研究打开了突破口" not in ACADEMIC_STYLE_RULES
+    # 新表述应为锚点式
+    assert "边缘端的高精度验证[1]为后续研究打开突破口" in ACADEMIC_STYLE_RULES
+
+
+def test_academic_style_rules_trend_demo_no_method_repetition():
+    """第六节发展趋势示范段落不应复述具体方法/数据。"""
+    # 旧示范含 "Noh 等人[1]率先通过TinyML优化...实现98.82%的精度" 属二次描述
+    assert "率先通过TinyML优化打破资源受限魔咒" not in ACADEMIC_STYLE_RULES
+    assert "实现98.82%的精度" not in ACADEMIC_STYLE_RULES
+    # 新示范应为锚点式
+    assert "轻量化部署[1]、知识迁移[16]、分层抗噪[19]" in ACADEMIC_STYLE_RULES
+
+
 def test_section_from_kb_prompt_includes_academic_style_rules():
     """WRITER_SECTION_FROM_KB_PROMPT 应包含 ACADEMIC_STYLE_RULES 全文。"""
     assert "引用主语与标注规则" in WRITER_SECTION_FROM_KB_PROMPT

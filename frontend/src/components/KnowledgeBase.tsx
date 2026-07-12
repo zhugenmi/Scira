@@ -140,6 +140,19 @@ export default function KnowledgeBase({ onReadPaper }: KnowledgeBaseProps) {
       paper.abstract?.toLowerCase().includes(searchQuery.toLowerCase()) ||
       authorStr.includes(searchQuery.toLowerCase())
     )
+  }).sort((a, b) => {
+    // 按 published_date 倒序(新->旧);无/坏日期的论文放最后,保持稳定排序。
+    const parseDate = (s: string | undefined): number | null => {
+      if (!s) return null
+      const t = Date.parse(s)
+      return isNaN(t) ? null : t
+    }
+    const at = parseDate(a.published_date)
+    const bt = parseDate(b.published_date)
+    if (at === null && bt === null) return 0
+    if (at === null) return 1
+    if (bt === null) return -1
+    return bt - at
   })
 
   const formatAuthors = (authors: string[] | string) => {

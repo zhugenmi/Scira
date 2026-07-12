@@ -11,7 +11,7 @@ import os
 import json
 from typing import Dict, List, Optional, Any, TypedDict, Annotated
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 from langgraph.graph import StateGraph, END
 from langgraph.types import Send
@@ -1830,7 +1830,21 @@ def run_workflow_from_knowledge_bases(
                 skipped.append(cat)
                 continue
 
-            for p in cat_data.get("papers", []) or []:
+            # 按 published_date 升序遍历(旧->新),让综述按时间脉络从早期工作写到最新进展。
+            # 无/坏日期的论文放最后(tuple 首位 1),不污染时间线;其内部保持 stable sort。
+            def _paper_date_key(p: Dict[str, Any]):
+                date_str = p.get("published_date") or p.get("published") or ""
+                if date_str:
+                    try:
+                        d = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+                        if d.tzinfo is None:
+                            d = d.replace(tzinfo=timezone.utc)
+                        return (0, d)
+                    except Exception:
+                        pass
+                return (1, datetime.min.replace(tzinfo=timezone.utc))
+
+            for p in sorted(cat_data.get("papers", []) or [], key=_paper_date_key):
                 pid = p.get("paper_id", "")
                 if not pid:
                     continue

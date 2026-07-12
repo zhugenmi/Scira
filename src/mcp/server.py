@@ -2992,6 +2992,269 @@ async def _stream_batch_reading_in_chat(session_id: str, kb_name: str, mode: str
     yield f"data: {json.dumps({'type': 'response_done', 'data': {}})}\n\n"
 
 
+def _load_paper_brief(paper: Dict[str, Any], cat_name: str) -> str:
+    """加载单篇论文的摘要要点：title/authors/year/abstract + 可选 snap 速览。
+
+    snap 速览来自 data/papers/<cat>/<paper_id>/snap_zh.json 的 markdown 字段，截取前 800
+    字符作为要点补充。无 snap 缓存时仅用 abstract。
+    """
+    pid = paper.get("paper_id", "")
+    title = paper.get("title", "") or "Untitled"
+    authors = paper.get("authors", [])
+    if isinstance(authors, str):
+        authors = [a.strip() for a in authors.split(";") if a.strip()]
+    author_str = ", ".join(authors[:3]) + (", 等" if len(authors) > 3 else "") if authors else "佚名"
+    year = ""
+    date_str = paper.get("published_date") or ""
+    import re as _re
+    m = _re.search(r"\d{4}", str(date_str))
+    if m:
+        year = m.group(0)
+
+    abstract = (paper.get("abstract") or "").strip()
+    parts = [f"标题: {title}", f"作者: {author_str}", f"年份: {year}"]
+    if abstract:
+        parts.append(f"摘要: {abstract[:500]}")
+
+    # 尝试加载 snap 速览缓存补充要点
+    if pid and cat_name:
+        snap_file = PROJECT_ROOT / "data" / "papers" / cat_name / pid / "snap_zh.json"
+        if snap_file.exists():
+            try:
+                snap_data = json.loads(snap_file.read_text(encoding="utf-8"))
+                snap_md = (snap_data.get("markdown") or "").strip()
+                if snap_md:
+                    parts.append(f"速览要点:\n{snap_md[:800]}")
+            except Exception as e:
+                logger.debug(f"load snap for {pid} failed: {e}")
+
+    return "\n".join(parts)
+
+
+def _renumber_citations(text: str, ref_list: list) -> tuple:
+    """按正文首次出现顺序重编号 [n] 引用，并重排 ref_list。
+
+    GB/T 7714-2015 顺序编码制要求：参考文献编号按正文首次引用顺序连续编码。
+    LLM 生成时按逻辑顺序引用（预编号的 ref_list 顺序不一定等于正文出现顺序），
+    此函数后处理修正：
+
+    1. 扫描所有 [n] 和 [n,m,p] 形式的引用标记
+    2. 按首次出现顺序建立 old_num -> new_num 映射
+    3. 替换正文所有标记为新编号
+    4. 按新编号顺序重排 ref_list（未被引用的文献从清单中删除）
+
+    Args:
+        text: LLM 生成的章节正文（不含参考文献目录）
+        ref_list: 预编号的参考文献清单，1-indexed（ref_list[0] 对应 [1]）
+
+    Returns:
+        (renumbered_text, reordered_ref_list)
+    """
+    import re
+
+    # 匹配 [n] 或 [n,m,p] 形式，不匹配 [n-m] 范围、[2 ms] 等非纯数字形式
+    pattern = re.compile(r"\[(\d+(?:,\s*\d+)*)\]")
+
+    old_to_new: dict = {}
+    next_new = 1
+
+    def _replace(match: "re.Match") -> str:
+        nonlocal next_new
+        nums = [int(n.strip()) for n in match.group(1).split(",")]
+        new_nums = []
+        for old_num in nums:
+            if old_num < 1 or old_num > len(ref_list):
+                new_nums.append(old_num)
+                continue
+            if old_num not in old_to_new:
+                old_to_new[old_num] = next_new
+                next_new += 1
+            new_nums.append(old_to_new[old_num])
+        return "[" + ",".join(str(n) for n in new_nums) + "]"
+
+    new_text = pattern.sub(_replace, text)
+
+    new_to_old = {v: k for k, v in old_to_new.items()}
+    reordered = [
+        ref_list[new_to_old[new_num] - 1]
+        for new_num in range(1, next_new)
+        if (new_to_old.get(new_num) - 1) < len(ref_list)
+    ]
+
+    return new_text, reordered
+
+
+async def _stream_section_generation_in_chat(
+    session_id: str,
+    kb_name: str,
+    section_topic: str,
+    constraints: str = "",
+):
+    """基于 KB 所有论文撰写某个学术章节，流式推送 markdown 到 SSE。
+
+    流程：
+    1. 定位 KB（复用 _find_kb_by_name，含 pdf_path 完整字段）
+    2. 加载每篇论文的摘要 + 可选 snap 速览
+    3. 构造带编号的参考文献清单（强制全引用）
+    4. 调 LLM 流式生成章节正文，token 直接推 SSE
+    5. 文末附 GB/T 7714 参考文献目录
+    6. 写回 memory_manager
+    """
+    from src.core.memory import memory_manager
+    from src.core.workflow import format_bibliography
+    from src.agents.prompts import WRITER_SECTION_FROM_KB_PROMPT, WRITER_SYSTEM
+    from config.settings import get_config, get_llm_client
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    target = _find_kb_by_name(kb_name)
+    if target is None:
+        msg = f"未在系统中找到名为「{kb_name}」的知识库。"
+        yield f"data: {json.dumps({'type': 'token', 'data': {'token': msg}})}\n\n"
+        memory_manager.add_message(session_id=session_id, role="assistant", content=msg)
+        yield f"data: {json.dumps({'type': 'response_done', 'data': {}})}\n\n"
+        return
+
+    papers = target.get("papers") or []
+    if not papers:
+        msg = f"知识库「{kb_name}」中暂无论文，无法生成章节。"
+        yield f"data: {json.dumps({'type': 'token', 'data': {'token': msg}})}\n\n"
+        memory_manager.add_message(session_id=session_id, role="assistant", content=msg)
+        yield f"data: {json.dumps({'type': 'response_done', 'data': {}})}\n\n"
+        return
+
+    cat_name = target.get("name", "")
+    topic_label = target.get("topic") or cat_name or kb_name
+
+    # 1. 构造论文 brief + 编号参考清单
+    briefs: List[str] = []
+    ref_list: List[Dict[str, Any]] = []
+    seen = set()
+    for p in papers:
+        pid = (p.get("paper_id") or "").strip()
+        title = (p.get("title") or "").strip()
+        if not pid and not title:
+            continue
+        key = pid or title.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+
+        authors = p.get("authors", [])
+        if isinstance(authors, str):
+            authors = [a.strip() for a in authors.split(";") if a.strip()]
+        year = ""
+        date_str = p.get("published_date") or ""
+        import re as _re
+        m = _re.search(r"\d{4}", str(date_str))
+        if m:
+            year = m.group(0)
+
+        ref_list.append({
+            "paper_id": pid,
+            "title": title,
+            "authors": authors,
+            "year": year,
+            "source": cat_name,
+        })
+        briefs.append(_load_paper_brief(p, cat_name))
+
+    n = len(ref_list)
+    papers_context = "\n\n---\n\n".join(
+        f"### 论文 [{i+1}]\n{b}" for i, b in enumerate(briefs)
+    )
+    ref_block = "\n".join(
+        f"[{i+1}] {('，'.join(r['authors'][:3]) + ('，等' if len(r['authors']) > 3 else '') if r['authors'] else '佚名')}. {r['title']}. {r['year']}"
+        for i, r in enumerate(ref_list)
+    )
+
+    constraints_line = f"约束：{constraints}" if constraints and constraints.strip() else "无特殊约束"
+
+    prompt = WRITER_SECTION_FROM_KB_PROMPT.format(
+        section_topic=section_topic,
+        n=n,
+        constraints_line=constraints_line,
+        papers_context=papers_context,
+        reference_block=ref_block,
+    )
+
+    header = (f"好的，将基于「{topic_label}」知识库的 {n} 篇论文撰写"
+              f"「{section_topic}」章节，强制引用全部 {n} 篇论文。\n\n")
+    yield f"data: {json.dumps({'type': 'response_start', 'data': {'content': ''}})}\n\n"
+    yield f"data: {json.dumps({'type': 'token', 'data': {'token': header}})}\n\n"
+
+    # 2. 调 LLM 流式生成正文
+    config = get_config()
+    llm = get_llm_client(config)
+    model_name = config.model.model_name or "gpt-4o"
+    messages = [SystemMessage(content=WRITER_SYSTEM), HumanMessage(content=prompt)]
+
+    full_parts: List[str] = [header]
+    loop = asyncio.get_event_loop()
+    _q: asyncio.Queue = asyncio.Queue()
+    SENTINEL = object()
+
+    def _run():
+        try:
+            for chunk in llm.stream(messages):
+                text = getattr(chunk, "content", None) or ""
+                if not text:
+                    continue
+                asyncio.run_coroutine_threadsafe(_q.put(("token", text)), loop).result()
+            asyncio.run_coroutine_threadsafe(_q.put(("done", None)), loop).result()
+        except Exception as exc:
+            logger.error(f"_stream_section_generation LLM stream failed: {exc}", exc_info=True)
+            asyncio.run_coroutine_threadsafe(_q.put(("error", str(exc))), loop).result()
+
+    loop.run_in_executor(None, _run)
+
+    # Buffer LLM output for citation renumbering (GB/T 7714 顺序编码制)
+    raw_llm_parts: List[str] = []
+    while True:
+        item = await _q.get()
+        kind = item[0]
+        if kind == "token":
+            raw_llm_parts.append(item[1])
+        elif kind == "done":
+            break
+        elif kind == "error":
+            err_msg = f"\n\n（生成失败：{item[1]}）"
+            raw_llm_parts.append(err_msg)
+            break
+
+    # Renumber citations by first-appearance order; reorder ref_list accordingly
+    raw_llm_text = "".join(raw_llm_parts)
+    try:
+        renumbered_text, reordered_refs = _renumber_citations(raw_llm_text, ref_list)
+    except Exception as e:
+        logger.warning(f"citation renumbering failed: {e}, using original")
+        renumbered_text = raw_llm_text
+        reordered_refs = ref_list
+
+    yield f"data: {json.dumps({'type': 'token', 'data': {'token': renumbered_text}})}\n\n"
+    full_parts.append(renumbered_text)
+
+    # 3. 文末附 GB/T 7714 参考文献目录（使用重排后的 ref_list）
+    bibliography = format_bibliography(reordered_refs)
+    if bibliography:
+        bib_section = f"\n\n{bibliography}\n"
+        full_parts.append(bib_section)
+        yield f"data: {json.dumps({'type': 'token', 'data': {'token': bib_section}})}\n\n"
+
+    # 4. 写回 memory
+    markdown = "".join(full_parts)
+    memory_manager.add_message(session_id=session_id, role="assistant", content=markdown)
+
+    # 记录 token usage（流式下构造 AIMessage 载体）
+    try:
+        from langchain_core.messages import AIMessage
+        from src.utils.logger import record_token_usage
+        record_token_usage(AIMessage(content=markdown), model_name)
+    except Exception as e:
+        logger.debug(f"record_token_usage for section gen failed: {e}")
+
+    yield f"data: {json.dumps({'type': 'response_done', 'data': {}})}\n\n"
+
+
 async def _handle_tool_call_chat(session_id: str, user_message: str, history: list):
     """tool-calling 路由：判断用户消息是否需要调用 KB/精读工具。
 
@@ -3067,6 +3330,24 @@ async def _handle_tool_call_chat(session_id: str, user_message: str, history: li
                 yield f"data: {json.dumps({'type': 'response_done', 'data': {}})}\n\n"
                 return
             async for chunk in _stream_batch_reading_in_chat(session_id, kb_name, mode):
+                yield chunk
+            return
+
+        if tname == "generate_section_from_kb":
+            kb_name = (targs.get("kb_name") or "").strip()
+            section_topic = (targs.get("section_topic") or "").strip()
+            constraints = targs.get("constraints") or ""
+            if not kb_name:
+                yield f"data: {json.dumps({'type': 'token', 'data': {'token': '未提供知识库名称，无法生成章节。'}})}\n\n"
+                yield f"data: {json.dumps({'type': 'response_done', 'data': {}})}\n\n"
+                return
+            if not section_topic:
+                yield f"data: {json.dumps({'type': 'token', 'data': {'token': '未提供章节主题，无法生成。请指明要写的章节（如国内外研究现状、研究背景、相关工作等）。'}})}\n\n"
+                yield f"data: {json.dumps({'type': 'response_done', 'data': {}})}\n\n"
+                return
+            async for chunk in _stream_section_generation_in_chat(
+                session_id, kb_name, section_topic, constraints,
+            ):
                 yield chunk
             return
 
