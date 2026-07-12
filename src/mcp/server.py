@@ -2865,6 +2865,32 @@ def _find_kb_by_name(kb_name: str) -> Optional[Dict[str, Any]]:
     return target
 
 
+def _filter_papers_with_pdfs(kb_target: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """筛选 KB 中有 PDF 的论文，返回时确保每项的 pdf_path 字段已填好。
+
+    PDF 路径解析顺序：
+    1. paper["pdf_path"] 字段（若文件存在）
+    2. fallback: data/papers/<cat_name>/<paper_id>/<paper_id>.pdf
+
+    无 PDF 的论文被过滤掉。
+    """
+    cat_name = kb_target.get("name", "")
+    all_papers = kb_target.get("papers") or []
+    result: List[Dict[str, Any]] = []
+    for p in all_papers:
+        pdf_path = p.get("pdf_path")
+        if pdf_path and (PROJECT_ROOT / pdf_path).exists():
+            result.append(p)
+            continue
+        pid = p.get("paper_id")
+        if pid and cat_name:
+            fallback_rel = f"data/papers/{cat_name}/{pid}/{pid}.pdf"
+            if (PROJECT_ROOT / fallback_rel).exists():
+                p["pdf_path"] = fallback_rel
+                result.append(p)
+    return result
+
+
 async def _stream_batch_reading_in_chat(session_id: str, kb_name: str, mode: str):
     """批量精读某 KB 所有有 PDF 的论文，逐篇流推 markdown 到 SSE。
 
@@ -2883,23 +2909,9 @@ async def _stream_batch_reading_in_chat(session_id: str, kb_name: str, mode: str
         yield f"data: {json.dumps({'type': 'response_done', 'data': {}})}\n\n"
         return
 
-    # 筛选有 PDF 的论文
-    # 优先用 pdf_path 字段；缺失时按标准路径 data/papers/<category>/<paper_id>/<paper_id>.pdf 兜底
+    # 筛选有 PDF 的论文（复用 _filter_papers_with_pdfs）
     all_papers = target.get("papers") or []
-    cat_name = target.get("name", "")
-    papers_to_read: List[Dict[str, Any]] = []
-    for p in all_papers:
-        pdf_path = p.get("pdf_path")
-        if pdf_path and (PROJECT_ROOT / pdf_path).exists():
-            papers_to_read.append(p)
-            continue
-        # 兜底：按标准路径构造
-        pid = p.get("paper_id")
-        if pid and cat_name:
-            fallback_rel = f"data/papers/{cat_name}/{pid}/{pid}.pdf"
-            if (PROJECT_ROOT / fallback_rel).exists():
-                p["pdf_path"] = fallback_rel
-                papers_to_read.append(p)
+    papers_to_read = _filter_papers_with_pdfs(target)
     skipped = len(all_papers) - len(papers_to_read)
 
     topic_label = target.get("topic") or target.get("name", kb_name)
