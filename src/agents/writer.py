@@ -67,6 +67,29 @@ class WritingResult:
     paper_content: str  # Combined content without abstract/intro/conclusion
 
 
+def _format_reference_block(reference_list: list) -> str:
+    """将参考文献清单格式化为编号文本块。
+
+    Args:
+        reference_list: 参考文献清单，每项含 authors/title/year
+
+    Returns:
+        格式化的编号引用字符串，如 "[1] Zhang, Li. Deep Learning. 2026\\n[2] Wang. NLP. 2025"
+        空列表返回空字符串。
+    """
+    if not reference_list:
+        return ""
+    ref_lines = []
+    for i, r in enumerate(reference_list, 1):
+        authors = r.get("authors") or []
+        if isinstance(authors, str):
+            authors = [a.strip() for a in authors.split(";") if a.strip()]
+        author_str = ", ".join(authors[:3]) + (", 等" if len(authors) > 3 else "") if authors else "佚名"
+        year = r.get("year", "")
+        ref_lines.append(f"[{i}] {author_str}. {r.get('title','')}. {year}")
+    return "\n".join(ref_lines)
+
+
 def _build_citation_instruction(section_title: str, reference_list: list) -> str:
     """根据章节标题类型构造引用指令。
 
@@ -88,15 +111,7 @@ def _build_citation_instruction(section_title: str, reference_list: list) -> str
             "仅基于已知信息客观陈述，参考文献目录将由系统留空。\n"
         )
 
-    ref_lines = []
-    for i, r in enumerate(reference_list, 1):
-        authors = r.get("authors") or []
-        if isinstance(authors, str):
-            authors = [a.strip() for a in authors.split(";") if a.strip()]
-        author_str = ", ".join(authors[:3]) + (", 等" if len(authors) > 3 else "") if authors else "佚名"
-        year = r.get("year", "")
-        ref_lines.append(f"[{i}] {author_str}. {r.get('title','')}. {year}")
-    reference_block = "\n".join(ref_lines)
+    reference_block = _format_reference_block(reference_list)
 
     is_lit_review = any(kw in section_title for kw in LIT_REVIEW_KEYWORDS)
     if is_lit_review:

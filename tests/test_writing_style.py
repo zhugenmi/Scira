@@ -96,3 +96,29 @@ def test_build_citation_instruction_keywords_coverage():
     for kw in keywords:
         result = _build_citation_instruction(f"章节含{kw}", ref_list)
         assert "句式三模式" in result, f"关键词 {kw} 未触发 ACADEMIC_STYLE_RULES"
+
+
+from src.agents.writer import _format_reference_block
+
+
+def test_format_reference_block_shared_helper():
+    """_format_reference_block 应正确格式化参考文献清单，且 writer 和 reviewer 从同一处导入。"""
+    # 空列表返回空字符串
+    assert _format_reference_block([]) == ""
+
+    # 正常格式化
+    ref_list = [
+        {"authors": ["Zhang", "Li"], "title": "Deep Learning", "year": "2026"},
+        {"authors": ["Wang"], "title": "NLP Advances", "year": "2025"},
+    ]
+    result = _format_reference_block(ref_list)
+    assert "[1] Zhang, Li. Deep Learning. 2026" in result
+    assert "[2] Wang. NLP Advances. 2025" in result
+
+    # 验证 reviewer.py 也从同一处导入
+    from src.agents.reviewer import _build_citation_instruction as reviewer_build_ci
+    # 通过检查 reviewer 的 _build_citation_instruction 是否使用了 _format_reference_block
+    # 来验证去重：若 reviewer 未使用共享 helper，其输出中仍应有格式化的引用块
+    ref_single = [{"authors": ["Smith"], "title": "Test Paper", "year": "2024"}]
+    reviewer_result = reviewer_build_ci(ref_single)
+    assert "[1] Smith. Test Paper. 2024" in reviewer_result

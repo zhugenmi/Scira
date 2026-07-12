@@ -23,6 +23,7 @@ from src.agents.prompts import (
     WRITER_INTRO_PROMPT,
     WRITER_CONCLUSION_PROMPT,
 )
+from src.agents.writer import _format_reference_block
 
 
 def _build_citation_instruction(reference_list: Optional[List[Dict[str, Any]]]) -> str:
@@ -39,15 +40,7 @@ def _build_citation_instruction(reference_list: Optional[List[Dict[str, Any]]]) 
             "本次没有可用的参考文献清单。不要在正文中编造任何引用或角标，"
             "仅基于已知信息客观陈述，参考文献目录将由系统留空。\n"
         )
-    ref_lines = []
-    for i, r in enumerate(reference_list, 1):
-        authors = r.get("authors") or []
-        if isinstance(authors, str):
-            authors = [a.strip() for a in authors.split(";") if a.strip()]
-        author_str = ", ".join(authors[:3]) + (", 等" if len(authors) > 3 else "") if authors else "佚名"
-        year = r.get("year", "")
-        ref_lines.append(f"[{i}] {author_str}. {r.get('title','')}. {year}")
-    reference_block = "\n".join(ref_lines)
+    reference_block = _format_reference_block(reference_list)
     return (
         "\n\n# 参考文献引用要求（非常重要，必须严格遵守）\n"
         "下方提供了带编号的参考文献清单。这些文献全部来自系统实际检索/知识库，"
