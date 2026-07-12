@@ -59,3 +59,40 @@ def test_conclusion_prompt_includes_academic_tone_supplement():
     assert "第三人称" in WRITER_CONCLUSION_PROMPT
     assert "量化" in WRITER_CONCLUSION_PROMPT
     assert "模糊态度词" in WRITER_CONCLUSION_PROMPT
+
+
+from src.agents.writer import _build_citation_instruction
+
+
+def test_build_citation_instruction_lit_review_section():
+    """综述类章节标题应触发 ACADEMIC_STYLE_RULES。"""
+    ref_list = [{"authors": ["Zhang"], "title": "Paper A", "year": "2026"}]
+    result = _build_citation_instruction("一、研究背景与现状", ref_list)
+    assert "引用主语与标注规则" in result
+    assert "句式三模式" in result
+    assert "[1]" in result
+    assert "Zhang" in result
+
+
+def test_build_citation_instruction_non_lit_review_section():
+    """非综述类章节标题不应触发 ACADEMIC_STYLE_RULES，但保留 [n] 角标规范。"""
+    ref_list = [{"authors": ["Li"], "title": "Paper B", "year": "2025"}]
+    result = _build_citation_instruction("二、研究方法", ref_list)
+    assert "句式三模式" not in result
+    assert "[1]" in result
+    assert "Li" in result
+
+
+def test_build_citation_instruction_no_references():
+    """无参考文献时应返回不编造引用提示。"""
+    result = _build_citation_instruction("三、实验分析", [])
+    assert "编造" in result
+
+
+def test_build_citation_instruction_keywords_coverage():
+    """综述类关键词应全部触发 ACADEMIC_STYLE_RULES。"""
+    keywords = ["现状", "背景", "相关", "趋势", "综述", "进展", "review"]
+    ref_list = [{"authors": ["A"], "title": "T", "year": "2026"}]
+    for kw in keywords:
+        result = _build_citation_instruction(f"章节含{kw}", ref_list)
+        assert "句式三模式" in result, f"关键词 {kw} 未触发 ACADEMIC_STYLE_RULES"
