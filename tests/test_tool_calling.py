@@ -246,11 +246,57 @@ def test_invoke_with_tools_degrades_on_unsupported_bind(monkeypatch):
 
 # ==================== 工具注册表 ====================
 
-def test_get_kb_reading_tools_returns_four():
-    """工具注册表应返回 4 个工具。"""
+def test_get_kb_reading_tools_returns_five():
+    """工具注册表应返回 5 个工具（含 generate_section_from_kb）。"""
     from src.agents.tools import get_kb_reading_tools
 
     tools = get_kb_reading_tools()
-    assert len(tools) == 4
+    assert len(tools) == 5
     names = {t.name for t in tools}
-    assert names == {"list_knowledge_bases", "list_papers_in_kb", "read_paper", "batch_read_papers_in_kb"}
+    assert names == {
+        "list_knowledge_bases",
+        "list_papers_in_kb",
+        "read_paper",
+        "batch_read_papers_in_kb",
+        "generate_section_from_kb",
+    }
+
+
+def test_generate_section_from_kb_validates_args():
+    """generate_section_from_kb 应校验 section_topic 非空。"""
+    from src.agents.tools import generate_section_from_kb
+
+    # 空 section_topic 应返回 error
+    result = json.loads(generate_section_from_kb.invoke({
+        "kb_name": "多源数据融合",
+        "section_topic": "",
+        "constraints": "",
+    }))
+    assert "error" in result
+
+    # 合法参数应返回 streaming 状态
+    result = json.loads(generate_section_from_kb.invoke({
+        "kb_name": "多源数据融合",
+        "section_topic": "国内外研究现状",
+        "constraints": "不超过3段文字",
+    }))
+    assert result["status"] == "streaming"
+    assert result["kb_name"] == "多源数据融合"
+    assert result["section_topic"] == "国内外研究现状"
+    assert result["constraints"] == "不超过3段文字"
+
+
+def test_load_paper_brief_includes_title_authors_year(fake_papers_dir):
+    """_load_paper_brief 应返回含标题/作者/年份/摘要的 brief 字符串。"""
+    from src.mcp.server import _load_paper_brief
+    from src.core import knowledge as kmod
+
+    # 读真实 category JSON 拿一篇完整 paper
+    cat_json = fake_papers_dir / "multi_source_fusion" / "multi_source_fusion.json"
+    data = json.loads(cat_json.read_text(encoding="utf-8"))
+    paper = data["papers"][0]
+
+    brief = _load_paper_brief(paper, "multi_source_fusion")
+    assert "Sensor Fusion" in brief
+    assert "Carol" in brief
+    assert "2024" in brief

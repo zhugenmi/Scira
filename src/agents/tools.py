@@ -174,11 +174,45 @@ def batch_read_papers_in_kb(kb_name: str, mode: str = "snap") -> str:
     )
 
 
+@tool
+def generate_section_from_kb(
+    kb_name: str,
+    section_topic: str,
+    constraints: str = "",
+) -> str:
+    """基于指定知识库的所有论文撰写某个学术章节，强制引用全部论文。
+
+    当用户说"根据 X 知识库写 Y 章节"、"基于 X 库写 Y"、"用 X 库的论文写 Y"
+    （Y 可以是"国内外研究现状"/"研究背景"/"相关工作"/"技术路线"等任意章节）时调用。
+    会强制引用 KB 中所有论文，正文用 [1][2][3]... 角标按序引用，文末附 GB/T 7714
+    参考文献目录。**不要**在用户想要新检索/调研时调用此工具（那应走研究工作流）。
+
+    Args:
+        kb_name: 知识库名称，支持中文 topic 或英文目录名
+        section_topic: 章节主题/名称，如"国内外研究现状"、"研究背景"、"相关工作"
+        constraints: 写作约束，如"不超过3段文字"、"500字以内"。无约束时传空字符串
+    """
+    if not section_topic or not section_topic.strip():
+        return json.dumps(
+            {"error": "section_topic 不能为空，需指明要写的章节/主题"},
+            ensure_ascii=False,
+        )
+    return json.dumps(
+        {
+            "status": "streaming",
+            "kb_name": kb_name,
+            "section_topic": section_topic,
+            "constraints": constraints or "",
+        },
+        ensure_ascii=False,
+    )
+
+
 # ==================== 工具注册表 ====================
 
 def get_kb_reading_tools() -> List[Any]:
     """返回聊天路由用的全部工具列表，供 BaseAgent.invoke_with_tools() 绑定到 LLM。"""
-    return [list_knowledge_bases, list_papers_in_kb, read_paper, batch_read_papers_in_kb]
+    return [list_knowledge_bases, list_papers_in_kb, read_paper, batch_read_papers_in_kb, generate_section_from_kb]
 
 
 # 路由层用：根据 tool name 拿到可执行函数
@@ -187,6 +221,7 @@ _TOOL_FUNCTIONS = {
     "list_papers_in_kb": list_papers_in_kb,
     "read_paper": read_paper,
     "batch_read_papers_in_kb": batch_read_papers_in_kb,
+    "generate_section_from_kb": generate_section_from_kb,
 }
 
 
