@@ -1,5 +1,5 @@
 """学术语体规范与写作提示词测试。"""
-from src.agents.prompts import ACADEMIC_STYLE_RULES, WRITER_SECTION_FROM_KB_PROMPT
+from src.agents.prompts import ACADEMIC_STYLE_RULES, WRITER_SECTION_FROM_KB_PROMPT, WRITER_CONCLUSION_PROMPT
 
 
 def test_academic_style_rules_exists():
@@ -51,3 +51,11 @@ def test_section_from_kb_prompt_still_formats_correctly():
     assert "论文上下文示例" in result
     assert "[1] 作者. 题目. 2026" in result
     assert "引用主语与标注规则" in result
+
+
+def test_conclusion_prompt_includes_academic_tone_supplement():
+    """WRITER_CONCLUSION_PROMPT 应包含学术语体补充要求。"""
+    assert "学术语体补充要求" in WRITER_CONCLUSION_PROMPT
+    assert "第三人称" in WRITER_CONCLUSION_PROMPT
+    assert "量化" in WRITER_CONCLUSION_PROMPT
+    assert "模糊态度词" in WRITER_CONCLUSION_PROMPT
