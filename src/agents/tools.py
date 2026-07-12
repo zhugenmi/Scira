@@ -208,11 +208,46 @@ def generate_section_from_kb(
     )
 
 
+@tool
+def answer_question_from_kb(kb_name: str, question: str) -> str:
+    """针对知识库内容的事实性问答。
+
+    当用户针对某个已有知识库提问，且不是要求"阅读/精读/写章节/列举清单"时调用。
+    内部流程：全库 lens 精读 -> LLM 整合抽取 -> 信息不全时补读 PDF -> 合并输出。
+    只返回最终整合答案，不逐篇展示精读结果。
+
+    例：
+    - "X 知识库里哪些论文用了公开数据集"
+    - "X 库中 Y 论文用了什么方法"
+    - "X 知识库哪些论文是 2023 年的"
+
+    Args:
+        kb_name: 知识库名称，支持中文 topic 或英文目录名
+        question: 用户针对该知识库内容提出的问题
+    """
+    if not question or not question.strip():
+        return json.dumps(
+            {"error": "question 不能为空，需指明要问的问题"},
+            ensure_ascii=False,
+        )
+    return json.dumps(
+        {"status": "streaming", "kb_name": kb_name, "question": question},
+        ensure_ascii=False,
+    )
+
+
 # ==================== 工具注册表 ====================
 
 def get_kb_reading_tools() -> List[Any]:
     """返回聊天路由用的全部工具列表，供 BaseAgent.invoke_with_tools() 绑定到 LLM。"""
-    return [list_knowledge_bases, list_papers_in_kb, read_paper, batch_read_papers_in_kb, generate_section_from_kb]
+    return [
+        list_knowledge_bases,
+        list_papers_in_kb,
+        read_paper,
+        batch_read_papers_in_kb,
+        generate_section_from_kb,
+        answer_question_from_kb,
+    ]
 
 
 # 路由层用：根据 tool name 拿到可执行函数
@@ -222,6 +257,7 @@ _TOOL_FUNCTIONS = {
     "read_paper": read_paper,
     "batch_read_papers_in_kb": batch_read_papers_in_kb,
     "generate_section_from_kb": generate_section_from_kb,
+    "answer_question_from_kb": answer_question_from_kb,
 }
 
 
